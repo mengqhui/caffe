@@ -7,6 +7,7 @@ if DEFINED APPVEYOR (
     if NOT DEFINED MSVC_VERSION set MSVC_VERSION=14
     if NOT DEFINED WITH_NINJA set WITH_NINJA=1
     if NOT DEFINED CPU_ONLY set CPU_ONLY=1
+    if NOT DEFINED CUDA_ARCH_NAME set CUDA_ARCH_NAME=Auto
     if NOT DEFINED CMAKE_CONFIG set CMAKE_CONFIG=Release
     if NOT DEFINED USE_NCCL set USE_NCCL=0
     if NOT DEFINED CMAKE_BUILD_SHARED_LIBS set CMAKE_BUILD_SHARED_LIBS=0
@@ -37,7 +38,7 @@ if DEFINED APPVEYOR (
     :: Update conda
     conda update conda -y
     :: Download other required packages
-    conda install --yes cmake ninja numpy scipy protobuf==3.1.0 six scikit-image pyyaml
+    conda install --yes cmake ninja numpy scipy protobuf==3.1.0 six scikit-image pyyaml pydotplus graphviz
 
     if ERRORLEVEL 1  (
       echo ERROR: Conda update or install failed
@@ -69,9 +70,12 @@ if DEFINED APPVEYOR (
     :: Change MSVC_VERSION to 12 to use VS 2013
     if NOT DEFINED MSVC_VERSION set MSVC_VERSION=14
     :: Change to 1 to use Ninja generator (builds much faster)
-    if NOT DEFINED WITH_NINJA set WITH_NINJA=1
+    if NOT DEFINED WITH_NINJA set WITH_NINJA=0
     :: Change to 1 to build caffe without CUDA support
     if NOT DEFINED CPU_ONLY set CPU_ONLY=0
+    :: Change to generate CUDA code for one of the following GPU architectures
+    :: [Fermi  Kepler  Maxwell  Pascal  All]
+    if NOT DEFINED CUDA_ARCH_NAME set CUDA_ARCH_NAME=Auto
     :: Change to Debug to build Debug. This is only relevant for the Ninja generator the Visual Studio generator will generate both Debug and Release configs
     if NOT DEFINED CMAKE_CONFIG set CMAKE_CONFIG=Release
     :: Set to 1 to use NCCL
@@ -98,7 +102,7 @@ if DEFINED APPVEYOR (
     :: Use cuDNN acceleration with CUDA backend
     if NOT DEFINED USE_CUDNN set USE_CUDNN=0
     :: Use OpenCL backend
-    if NOT DEFINED USE_GREENTEA set USE_GREENTEA=1
+    if NOT DEFINED USE_OPENCL set USE_OPENCL=1
     :: Use LibDNN acceleration with OpenCL and/or CUDA backend
     if NOT DEFINED USE_LIBDNN set USE_LIBDNN=1
     :: Use OpenMP (disable this on systems with #NUMA > 1)
@@ -107,6 +111,24 @@ if DEFINED APPVEYOR (
     if NOT DEFINED USE_INDEX64 set USE_INDEX64=0
     :: Use Intel spatial kernels acceleration for forward convolution on Intel iGPUs
     if NOT DEFINED USE_INTEL_SPATIAL set USE_INTEL_SPATIAL=0
+    :: Disable host/device shared memory
+    if NOT DEFINED DISABLE_DEVICE_HOST_UNIFIED_MEMORY set DISABLE_DEVICE_HOST_UNIFIED_MEMORY=0
+    :: Build with SQLITE kernel cache
+    if NOT DEFINED USE_SQLITE3 set USE_SQLITE3=0
+    :: Build Caffe with FP16 support
+    if NOT DEFINED USE_HALF set USE_HALF=1
+    :: Build Caffe with FP32 support
+    if NOT DEFINED USE_FLOAT set USE_FLOAT=1
+    :: Build Caffe with FP64 support
+    if NOT DEFINED USE_DOUBLE set USE_DOUBLE=0
+    :: Build Caffe with 8 bit quantized support
+    if NOT DEFINED USE_INT_QUANT_8 set USE_INT_QUANT_8=1
+    :: Build Caffe with 16 bit quantized support
+    if NOT DEFINED USE_INT_QUANT_16 set USE_INT_QUANT_16=1
+    :: Build Caffe with 32 bit quantized support
+    if NOT DEFINED USE_INT_QUANT_32 set USE_INT_QUANT_32=0
+    :: Build Caffe with 64 bit quantized support
+    if NOT DEFINED USE_INT_QUANT_64 set USE_INT_QUANT_64=0
 )
 
 :: Set the appropriate CMake generator
@@ -135,12 +157,14 @@ echo INFO: WITH_NINJA                 = !WITH_NINJA!
 echo INFO: CMAKE_GENERATOR            = "!CMAKE_GENERATOR!"
 echo INFO: CPU_ONLY                   = !CPU_ONLY!
 echo INFO: USE_CUDA                   = !USE_CUDA!
+echo INFO: CUDA_ARCH_NAME             = !CUDA_ARCH_NAME!
 echo INFO: USE_CUDNN                  = !USE_CUDNN!
-echo INFO: USE_GREENTEA               = !USE_GREENTEA!
+echo INFO: USE_OPENCL               = !USE_OPENCL!
 echo INFO: USE_LIBDNN                 = !USE_LIBDNN!
 echo INFO: USE_OPENMP                 = !USE_OPENMP!
 echo INFO: USE_INDEX64                = !USE_INDEX_64!
 echo INFO: USE_INTEL_SPATIAL          = !USE_INTEL_SPATIAL!
+echo INFO: DISABLE_DEVICE_HOST_UNIFIED_MEMORY = !DISABLE_DEVICE_HOST_UNIFIED_MEMORY!
 echo INFO: CMAKE_CONFIG               = !CMAKE_CONFIG!
 echo INFO: USE_NCCL                   = !USE_NCCL!
 echo INFO: CMAKE_BUILD_SHARED_LIBS    = !CMAKE_BUILD_SHARED_LIBS!
@@ -184,13 +208,23 @@ cmake -G"!CMAKE_GENERATOR!" ^
 	  -DUSE_CUDA:BOOL=%USE_CUDA% ^
       -DUSE_CUDNN:BOOL=%USE_CUDNN% ^
 	  -DUSE_LIBDNN:BOOL=%USE_LIBDNN% ^
-	  -DUSE_GREENTEA:BOOL=%USE_GREENTEA% ^
+	  -DUSE_OPENCL:BOOL=%USE_OPENCL% ^
 	  -DUSE_OPENMP:BOOL=%USE_OPENMP% ^
       -DUSE_INDEX64:BOOL=%USE_INDEX64% ^
+      -DUSE_SQLITE:BOOL=%USE_SQLITE% ^
+      -DUSE_HALF:BOOL=%USE_HALF% ^
+      -DUSE_FLOAT:BOOL=%USE_FLOAT% ^
+      -DUSE_DOUBLE:BOOL=%USE_DOUBLE% ^
+      -DUSE_INT_QUANT_8:BOOL=%USE_INT_QUANT_8% ^
+      -DUSE_INT_QUANT_16:BOOL=%USE_INT_QUANT_16% ^
+      -DUSE_INT_QUANT_32:BOOL=%USE_INT_QUANT_32% ^
+      -DUSE_INT_QUANT_64:BOOL=%USE_INT_QUANT_64% ^
       -DUSE_INTEL_SPATIAL:BOOL=%USE_INTEL_SPATIAL% ^
+      -DDISABLE_DEVICE_HOST_UNIFIED_MEMORY=%DISABLE_DEVICE_HOST_UNIFIED_MEMORY% ^
       -DCOPY_PREREQUISITES:BOOL=1 ^
       -DINSTALL_PREREQUISITES:BOOL=1 ^
       -DUSE_NCCL:BOOL=!USE_NCCL! ^
+      -DCUDA_ARCH_NAME:STRING=%CUDA_ARCH_NAME% ^
       "%~dp0\.."
 
 if ERRORLEVEL 1 (

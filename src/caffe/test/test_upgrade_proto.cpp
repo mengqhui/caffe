@@ -2893,7 +2893,7 @@ TEST_F(NetUpgradeTest, TestImageNet) {
 
 TEST_F(NetUpgradeTest, TestUpgradeV1LayerType) {
   LayerParameter layer_param;
-  shared_ptr<Layer<float> > layer;
+  shared_ptr<Layer<float, float, float> > layer;
   for (int_tp i = 0; i < V1LayerParameter_LayerType_LayerType_ARRAYSIZE; ++i) {
     ASSERT_TRUE(V1LayerParameter_LayerType_IsValid(i));
     V1LayerParameter_LayerType v1_type = V1LayerParameter_LayerType(i);
@@ -2921,7 +2921,7 @@ TEST_F(NetUpgradeTest, TestUpgradeV1LayerType) {
      continue;
     }
     #endif  // !USE_OPENCV
-    layer = LayerRegistry<float>::CreateLayer(layer_param);
+    layer = LayerRegistry<float, float, float>::CreateLayer(layer_param);
     EXPECT_EQ(v2_layer_type, layer->type());
   }
 }
@@ -2952,6 +2952,8 @@ TEST_F(SolverTypeUpgradeTest, TestSimple) {
   for (int i = 0; i < 6; ++i) {
     const string& input_proto =
         "net: 'examples/mnist/lenet_train_test.prototxt' "
+        "weights: 'examples/mnist/lenet_train_test1.caffemodel' "
+        "weights: 'examples/mnist/lenet_train_test2.caffemodel' "
         "test_iter: 100 "
         "test_interval: 500 "
         "base_lr: 0.01 "
@@ -2965,9 +2967,11 @@ TEST_F(SolverTypeUpgradeTest, TestSimple) {
         "snapshot: 5000 "
         "snapshot_prefix: 'examples/mnist/lenet_rmsprop' "
         "solver_mode: GPU "
-        "solver_type: " + std::string(old_type_vec[i]) + " ";
+        "solver_type: " + string(old_type_vec[i]) + " ";
     const string& expected_output_proto =
         "net: 'examples/mnist/lenet_train_test.prototxt' "
+        "weights: 'examples/mnist/lenet_train_test1.caffemodel' "
+        "weights: 'examples/mnist/lenet_train_test2.caffemodel' "
         "test_iter: 100 "
         "test_interval: 500 "
         "base_lr: 0.01 "
@@ -2981,7 +2985,7 @@ TEST_F(SolverTypeUpgradeTest, TestSimple) {
         "snapshot: 5000 "
         "snapshot_prefix: 'examples/mnist/lenet_rmsprop' "
         "solver_mode: GPU "
-        "type: '" + std::string(new_type_vec[i]) + "' ";
+        "type: '" + string(new_type_vec[i]) + "' ";
     this->RunSolverTypeUpgradeTest(input_proto, expected_output_proto);
   }
 }

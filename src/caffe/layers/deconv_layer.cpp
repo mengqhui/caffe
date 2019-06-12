@@ -4,27 +4,10 @@
 
 namespace caffe {
 
-template<typename Dtype>
-void DeconvolutionLayer<Dtype>::compute_output_shape() {
-  const int_tp* kernel_shape_data = this->kernel_shape_.cpu_data();
-  const int_tp* stride_data = this->stride_.cpu_data();
-  const int_tp* pad_data = this->pad_.cpu_data();
-  const int_tp* dilation_data = this->dilation_.cpu_data();
-  this->output_shape_.clear();
-  for (int_tp i = 0; i < this->num_spatial_axes_; ++i) {
-    // i + 1 to skip channel axis
-    const int_tp input_dim = this->input_shape(i + 1);
-    const int_tp kernel_extent = dilation_data[i] * (kernel_shape_data[i] - 1)
-        + 1;
-    const int_tp output_dim = stride_data[i] * (input_dim - 1)
-        + kernel_extent - 2 * pad_data[i];
-    this->output_shape_.push_back(output_dim);
-  }
-}
-
-template <typename Dtype>
-void DeconvolutionLayer<Dtype>::Forward_cpu(const vector<Blob<Dtype>*>& bottom,
-      const vector<Blob<Dtype>*>& top) {
+template<typename Dtype, typename MItype, typename MOtype>
+void DeconvolutionLayer<Dtype, MItype, MOtype>::Forward_cpu(
+      const vector<Blob<MItype>*>& bottom,
+      const vector<Blob<MOtype>*>& top) {
   const Dtype* weight = this->blobs_[0]->cpu_data();
   for (int_tp i = 0; i < bottom.size(); ++i) {
     const Dtype* bottom_data = bottom[i]->cpu_data();
@@ -40,9 +23,11 @@ void DeconvolutionLayer<Dtype>::Forward_cpu(const vector<Blob<Dtype>*>& bottom,
   }
 }
 
-template <typename Dtype>
-void DeconvolutionLayer<Dtype>::Backward_cpu(const vector<Blob<Dtype>*>& top,
-      const vector<bool>& propagate_down, const vector<Blob<Dtype>*>& bottom) {
+template<typename Dtype, typename MItype, typename MOtype>
+void DeconvolutionLayer<Dtype, MItype, MOtype>::Backward_cpu(
+     const vector<Blob<MOtype>*>& top,
+     const vector<bool>& propagate_down,
+     const vector<Blob<MItype>*>& bottom) {
   const Dtype* weight = this->blobs_[0]->cpu_data();
   Dtype* weight_diff = this->blobs_[0]->mutable_cpu_diff();
   for (int_tp i = 0; i < top.size(); ++i) {
@@ -79,6 +64,18 @@ void DeconvolutionLayer<Dtype>::Backward_cpu(const vector<Blob<Dtype>*>& top,
 STUB_GPU(DeconvolutionLayer);
 #endif
 
-INSTANTIATE_CLASS(DeconvolutionLayer);
+
+INSTANTIATE_CLASS_3T_GUARDED(DeconvolutionLayer,
+                             (half_fp), (half_fp), (half_fp));
+INSTANTIATE_CLASS_3T_GUARDED(DeconvolutionLayer,
+                             (float), (float), (float));
+INSTANTIATE_CLASS_3T_GUARDED(DeconvolutionLayer,
+                             (uint8_t), (uint8_t), (uint8_t));
+INSTANTIATE_CLASS_3T_GUARDED(DeconvolutionLayer,
+                             (uint16_t), (uint16_t), (uint16_t));
+INSTANTIATE_CLASS_3T_GUARDED(DeconvolutionLayer,
+                             (uint32_t), (uint32_t), (uint32_t));
+INSTANTIATE_CLASS_3T_GUARDED(DeconvolutionLayer,
+                             (uint64_t), (uint64_t), (uint64_t));
 
 }  // namespace caffe

@@ -14,10 +14,11 @@ namespace caffe {
 /**
  * TODO(dox) explain cuDNN interface
  */
-template <typename Dtype>
-void CuDNNConvolutionLayer<Dtype>::LayerSetUp(
-    const vector<Blob<Dtype>*>& bottom, const vector<Blob<Dtype>*>& top) {
-  ConvolutionLayer<Dtype>::LayerSetUp(bottom, top);
+template<typename Dtype, typename MItype, typename MOtype>
+void CuDNNConvolutionLayer<Dtype, MItype, MOtype>::LayerSetUp(
+    const vector<Blob<MItype>*>& bottom,
+    const vector<Blob<MOtype>*>& top) {
+  BaseConvolutionLayer<Dtype, MItype, MOtype>::LayerSetUp(bottom, top);
 
   this->use_colbuffer_ = false;
 
@@ -88,13 +89,14 @@ void CuDNNConvolutionLayer<Dtype>::LayerSetUp(
   handles_setup_ = true;
 }
 
-template <typename Dtype>
-void CuDNNConvolutionLayer<Dtype>::Reshape(
-    const vector<Blob<Dtype>*>& bottom, const vector<Blob<Dtype>*>& top) {
+template<typename Dtype, typename MItype, typename MOtype>
+void CuDNNConvolutionLayer<Dtype, MItype, MOtype>::Reshape(
+    const vector<Blob<MItype>*>& bottom,
+    const vector<Blob<MOtype>*>& top) {
 
   this->use_colbuffer_ = false;
 
-  ConvolutionLayer<Dtype>::Reshape(bottom, top);
+  ConvolutionLayer<Dtype, MItype, MOtype>::Reshape(bottom, top);
 
   bottom_offset_ = this->bottom_dim_ / this->group_;
   top_offset_ = this->top_dim_ / this->group_;
@@ -108,8 +110,8 @@ void CuDNNConvolutionLayer<Dtype>::Reshape(
   for (int_tp i = 0; i < bottom.size(); i++) {
     {
       int_tp total_dims = bottom[i]->shape().size();
-      std::vector<int_tp> full_shape(total_dims);
-      std::vector<int_tp> full_stride(total_dims);
+      vector<int_tp> full_shape(total_dims);
+      vector<int_tp> full_stride(total_dims);
 
       for (int_tp j = total_dims - 1; j >= 2; --j) {
         full_shape[j] = bottom[i]->shape()[j];
@@ -132,8 +134,8 @@ void CuDNNConvolutionLayer<Dtype>::Reshape(
 
     {
       int_tp total_dims = top[i]->shape().size();
-      std::vector<int_tp> full_shape(total_dims);
-      std::vector<int_tp> full_stride(total_dims);
+      vector<int_tp> full_shape(total_dims);
+      vector<int_tp> full_stride(total_dims);
 
       for (int_tp j = total_dims - 1; j >= 2; --j) {
         full_shape[j] = top[i]->shape()[j];
@@ -154,7 +156,7 @@ void CuDNNConvolutionLayer<Dtype>::Reshape(
     }
 
     cudnn::setConvolutionDesc<Dtype>(&conv_descs_[i], bottom_descs_[i],
-        filter_desc_, this->num_spatial_axes_, pad_data, stride_data);
+                  filter_desc_, this->num_spatial_axes_, pad_data, stride_data);
 
     // choose forward and backward algorithms + workspace(s)
     CUDNN_CHECK(cudnnGetConvolutionForwardAlgorithm(handle_[0],
@@ -253,19 +255,18 @@ void CuDNNConvolutionLayer<Dtype>::Reshape(
     }
   }
 
-  std::vector<int_tp> ones(this->num_spatial_axes_, 1);
+  vector<int_tp> ones(this->num_spatial_axes_, 1);
   const int_tp* ones_ptr = &ones[0];
 
   // Tensor descriptor for bias.
   if (this->bias_term_) {
-    cudnn::setTensorNdDesc<Dtype>(&bias_desc_,
-                                  this->num_spatial_axes_,
-        1, this->num_output_ / this->group_, ones_ptr);
+    cudnn::setTensorNdDesc<Dtype>(&bias_desc_, this->num_spatial_axes_, 1,
+                                  this->num_output_ / this->group_, ones_ptr);
   }
 }
 
-template <typename Dtype>
-CuDNNConvolutionLayer<Dtype>::~CuDNNConvolutionLayer() {
+template<typename Dtype, typename MItype, typename MOtype>
+CuDNNConvolutionLayer<Dtype, MItype, MOtype>::~CuDNNConvolutionLayer() {
   // Check that handles have been setup before destroying.
   if (!handles_setup_) { return; }
 
@@ -285,6 +286,7 @@ CuDNNConvolutionLayer<Dtype>::~CuDNNConvolutionLayer() {
   }
 
   cudaFree(workspaceData);
+  delete [] workspace;
   delete [] stream_;
   delete [] handle_;
   delete [] fwd_algo_;
@@ -295,7 +297,10 @@ CuDNNConvolutionLayer<Dtype>::~CuDNNConvolutionLayer() {
   delete [] workspace_bwd_filter_sizes_;
 }
 
-INSTANTIATE_CLASS(CuDNNConvolutionLayer);
+INSTANTIATE_CLASS_3T_GUARDED(CuDNNConvolutionLayer,
+                             (float), (float), (float));
+INSTANTIATE_CLASS_3T_GUARDED(CuDNNConvolutionLayer,
+                             (double), (double), (double));
 
 }   // namespace caffe
 #endif

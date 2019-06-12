@@ -12,7 +12,7 @@ namespace caffe {
 // negative value of a parameter converts it to value higher than 0x800...
 // The casting allows to use one condition instead of two.
 inline bool is_a_ge_zero_and_a_lt_b(int_tp a, int_tp b) {
-  return static_cast<unsigned>(a) < static_cast<unsigned>(b);
+  return static_cast<uint_tp>(a) < static_cast<uint_tp>(b);
 }
 
 template<typename Dtype>
@@ -21,7 +21,9 @@ void im2col_cpu(const Dtype* data_im, const int_tp channels,
                 const int_tp kernel_w, const int_tp pad_h, const int_tp pad_w,
                 const int_tp stride_h, const int_tp stride_w,
                 const int_tp dilation_h, const int_tp dilation_w,
-                Dtype* data_col) {
+                Dtype* data_col, const QuantizerValues* const data_quant) {
+  const Dtype zero = data_quant ? data_quant->template get_zero<Dtype>()
+                                : Dtype(0);
   const int_tp output_h = (height + 2 * pad_h
       - (dilation_h * (kernel_h - 1) + 1)) / stride_h + 1;
   const int_tp output_w =
@@ -34,7 +36,7 @@ void im2col_cpu(const Dtype* data_im, const int_tp channels,
         for (int_tp output_rows = output_h; output_rows; output_rows--) {
           if (!is_a_ge_zero_and_a_lt_b(input_row, height)) {
             for (int_tp output_cols = output_w; output_cols; output_cols--) {
-              *(data_col++) = 0;
+              *(data_col++) = zero;
             }
           } else {
             int_tp input_col = -pad_w + kernel_col * dilation_w;
@@ -42,7 +44,7 @@ void im2col_cpu(const Dtype* data_im, const int_tp channels,
               if (is_a_ge_zero_and_a_lt_b(input_col, width)) {
                 *(data_col++) = data_im[input_row * width + input_col];
               } else {
-                *(data_col++) = 0;
+                *(data_col++) = zero;
               }
               input_col += stride_w;
             }
@@ -55,20 +57,7 @@ void im2col_cpu(const Dtype* data_im, const int_tp channels,
 }
 
 // Explicit instantiation
-template void im2col_cpu<float>(const float* data_im, const int_tp channels,
-                                const int_tp height, const int_tp width,
-                                const int_tp kernel_h, const int_tp kernel_w,
-                                const int_tp pad_h, const int_tp pad_w,
-                                const int_tp stride_h, const int_tp stride_w,
-                                const int_tp dilation_h,
-                                const int_tp dilation_w, float* data_col);
-template void im2col_cpu<double>(const double* data_im, const int_tp channels,
-                                 const int_tp height, const int_tp width,
-                                 const int_tp kernel_h, const int_tp kernel_w,
-                                 const int_tp pad_h, const int_tp pad_w,
-                                 const int_tp stride_h, const int_tp stride_w,
-                                 const int_tp dilation_h,
-                                 const int_tp dilation_w, double* data_col);
+INSTANTIATE_FUNC_1T_GUARDED(im2col_cpu, PROTO_TYPES);
 
 template<typename Dtype>
 inline void im2col_nd_core_cpu(const Dtype* data_input, const bool im2col,
@@ -76,13 +65,16 @@ inline void im2col_nd_core_cpu(const Dtype* data_input, const bool im2col,
                                const int_tp* im_shape, const int_tp* col_shape,
                                const int_tp* kernel_shape, const int_tp* pad,
                                const int_tp* stride, const int_tp* dilation,
-                               Dtype* data_output) {
+                               Dtype* data_output,
+                               const QuantizerValues* const data_quant) {
+  const Dtype zero = data_quant ? data_quant->template get_zero<Dtype>()
+                                : Dtype(0);
   if (!im2col) {
     int_tp im_size = im_shape[0];
     for (int_tp i = 0; i < num_spatial_axes; ++i) {
       im_size *= im_shape[1 + i];
     }
-    caffe_set(im_size, Dtype(0), data_output);
+    caffe_set(im_size, zero, data_output);
   }
   int_tp kernel_size = 1;
   for (int_tp i = 0; i < num_spatial_axes; ++i) {
@@ -118,7 +110,7 @@ inline void im2col_nd_core_cpu(const Dtype* data_input, const bool im2col,
       }
       if (im2col) {
         if (is_padding) {
-          data_output[index_col] = 0;
+          data_output[index_col] = zero;
         } else {
           data_output[index_col] = data_input[index_im];
         }
@@ -148,27 +140,13 @@ void im2col_nd_cpu(const Dtype* data_im, const int_tp num_spatial_axes,
                    const int_tp* im_shape, const int_tp* col_shape,
                    const int_tp* kernel_shape, const int_tp* pad,
                    const int_tp* stride, const int_tp* dilation,
-                   Dtype* data_col) {
+                   Dtype* data_col, const QuantizerValues* const data_quant) {
   const bool kIm2Col = true;
   im2col_nd_core_cpu(data_im, kIm2Col, num_spatial_axes, im_shape, col_shape,
-                     kernel_shape, pad, stride, dilation, data_col);
+                     kernel_shape, pad, stride, dilation, data_col, data_quant);
 }
 
-// Explicit instantiation
-template void im2col_nd_cpu<float>(const float* data_im,
-                                   const int_tp num_spatial_axes,
-                                   const int_tp* im_shape,
-                                   const int_tp* col_shape,
-                                   const int_tp* kernel_shape,
-                                   const int_tp* pad, const int_tp* stride,
-                                   const int_tp* dilation, float* data_col);
-template void im2col_nd_cpu<double>(const double* data_im,
-                                    const int_tp num_spatial_axes,
-                                    const int_tp* im_shape,
-                                    const int_tp* col_shape,
-                                    const int_tp* kernel_shape,
-                                    const int_tp* pad, const int_tp* stride,
-                                    const int_tp* dilation, double* data_col);
+INSTANTIATE_FUNC_1T_GUARDED(im2col_nd_cpu, PROTO_TYPES);
 
 template<typename Dtype>
 void col2im_cpu(const Dtype* data_col, const int_tp channels,
@@ -208,20 +186,8 @@ void col2im_cpu(const Dtype* data_col, const int_tp channels,
 }
 
 // Explicit instantiation
-template void col2im_cpu<float>(const float* data_col, const int_tp channels,
-                                const int_tp height, const int_tp width,
-                                const int_tp kernel_h, const int_tp kernel_w,
-                                const int_tp pad_h, const int_tp pad_w,
-                                const int_tp stride_h, const int_tp stride_w,
-                                const int_tp dilation_h,
-                                const int_tp dilation_w, float* data_im);
-template void col2im_cpu<double>(const double* data_col, const int_tp channels,
-                                 const int_tp height, const int_tp width,
-                                 const int_tp kernel_h, const int_tp kernel_w,
-                                 const int_tp pad_h, const int_tp pad_w,
-                                 const int_tp stride_h, const int_tp stride_w,
-                                 const int_tp dilation_h,
-                                 const int_tp dilation_w, double* data_im);
+INSTANTIATE_FUNC_1T_GUARDED(col2im_cpu, PROTO_TYPES);
+
 
 template<typename Dtype>
 void col2im_nd_cpu(const Dtype* data_col, const int_tp num_spatial_axes,
@@ -231,23 +197,11 @@ void col2im_nd_cpu(const Dtype* data_col, const int_tp num_spatial_axes,
                    Dtype* data_im) {
   const bool kIm2Col = false;
   im2col_nd_core_cpu(data_col, kIm2Col, num_spatial_axes, im_shape, col_shape,
-                     kernel_shape, pad, stride, dilation, data_im);
+                     kernel_shape, pad, stride, dilation, data_im, nullptr);
 }
 
 // Explicit instantiation
-template void col2im_nd_cpu<float>(const float* data_col,
-                                   const int_tp num_spatial_axes,
-                                   const int_tp* im_shape,
-                                   const int_tp* col_shape,
-                                   const int_tp* kernel_shape,
-                                   const int_tp* pad, const int_tp* stride,
-                                   const int_tp* dilation, float* data_im);
-template void col2im_nd_cpu<double>(const double* data_col,
-                                    const int_tp num_spatial_axes,
-                                    const int_tp* im_shape,
-                                    const int_tp* col_shape,
-                                    const int_tp* kernel_shape,
-                                    const int_tp* pad, const int_tp* stride,
-                                    const int_tp* dilation, double* data_im);
+INSTANTIATE_FUNC_1T_GUARDED(col2im_nd_cpu, PROTO_TYPES);
+
 
 }  // namespace caffe

@@ -8,14 +8,9 @@
 
 #include "caffe/test/test_caffe_main.hpp"
 
-#ifdef USE_GREENTEA
-#include "caffe/greentea/greentea.hpp"
-#include "caffe/greentea/greentea_math_functions.hpp"
-#endif
-
 namespace caffe {
 
-template <typename Dtype>
+template<typename Dtype>
 class RandomNumberGeneratorTest : public ::testing::Test {
  protected:
   RandomNumberGeneratorTest()
@@ -23,17 +18,13 @@ class RandomNumberGeneratorTest : public ::testing::Test {
        sample_size_(10000),
        seed_(1701),
        data_(new SyncedMemory(sample_size_ * sizeof(Dtype),
-                              Caffe::GetDefaultDevice(),
-                              dtypeof<Dtype>())),
+                              Caffe::GetDefaultDevice())),
        data_2_(new SyncedMemory(sample_size_ * sizeof(Dtype),
-                              Caffe::GetDefaultDevice(),
-                              dtypeof<Dtype>())),
+                              Caffe::GetDefaultDevice())),
        int_data_(new SyncedMemory(sample_size_ * sizeof(int_tp),
-                              Caffe::GetDefaultDevice(),
-                   std::is_same<int_tp, int32_t>::value ? INT32 : INT64)),
+                              Caffe::GetDefaultDevice())),
        int_data_2_(new SyncedMemory(sample_size_ * sizeof(int_tp),
-                              Caffe::GetDefaultDevice(),
-                   std::is_same<int_tp, int32_t>::value ? INT32 : INT64)) {}
+                              Caffe::GetDefaultDevice())) {}
 
   virtual void SetUp() {
     Caffe::set_random_seed(this->seed_, Caffe::GetDefaultDevice());
@@ -64,7 +55,8 @@ class RandomNumberGeneratorTest : public ::testing::Test {
   }
 
   Dtype mean_bound(const Dtype std, const int_tp sample_size) {
-    return mean_bound_multiplier_ * std / sqrt(static_cast<Dtype>(sample_size));
+    return mean_bound_multiplier_ * std /
+        std::sqrt(static_cast<Dtype>(sample_size));
   }
 
   Dtype mean_bound(const Dtype std) {
@@ -86,7 +78,7 @@ class RandomNumberGeneratorTest : public ::testing::Test {
     const Dtype sample_mean = this->sample_mean(
         static_cast<const Dtype*>(cpu_data));
     EXPECT_NEAR(sample_mean, true_mean, bound);
-    // Check that roughly half the samples are above the true mean.
+    // Check that roughly half_fp the samples are above the true mean.
     int_tp num_above_mean = 0;
     int_tp num_below_mean = 0;
     int_tp num_mean = 0;
@@ -109,7 +101,7 @@ class RandomNumberGeneratorTest : public ::testing::Test {
     const Dtype sample_p_above_mean =
         static_cast<Dtype>(num_above_mean) / sample_size_;
     const Dtype bernoulli_p = (1 - sparse_p) * 0.5;
-    const Dtype bernoulli_std = sqrt(bernoulli_p * (1 - bernoulli_p));
+    const Dtype bernoulli_std = std::sqrt(bernoulli_p * (1 - bernoulli_p));
     const Dtype bernoulli_bound = this->mean_bound(bernoulli_std);
     EXPECT_NEAR(bernoulli_p, sample_p_above_mean, bernoulli_bound);
   }
@@ -124,12 +116,12 @@ class RandomNumberGeneratorTest : public ::testing::Test {
                         const void* cpu_data, const Dtype sparse_p = 0) {
     const Dtype* rng_data = static_cast<const Dtype*>(cpu_data);
     const Dtype true_mean = (lower + upper) / 2;
-    const Dtype true_std = (upper - lower) / sqrt(12);
+    const Dtype true_std = (upper - lower) / std::sqrt(12);
     // Check that sample mean roughly matches true mean.
     const Dtype bound = this->mean_bound(true_std);
     const Dtype sample_mean = this->sample_mean(rng_data);
     EXPECT_NEAR(sample_mean, true_mean, bound);
-    // Check that roughly half the samples are above the true mean, and none are
+    // Check that roughly half_fp the samples are above the true mean, and none are
     // above upper or below lower.
     int_tp num_above_mean = 0;
     int_tp num_below_mean = 0;
@@ -162,7 +154,7 @@ class RandomNumberGeneratorTest : public ::testing::Test {
     const Dtype sample_p_above_mean =
         static_cast<Dtype>(num_above_mean) / sample_size_;
     const Dtype bernoulli_p = (1 - sparse_p) * 0.5;
-    const Dtype bernoulli_std = sqrt(bernoulli_p * (1 - bernoulli_p));
+    const Dtype bernoulli_std = std::sqrt(bernoulli_p * (1 - bernoulli_p));
     const Dtype bernoulli_bound = this->mean_bound(bernoulli_std);
     EXPECT_NEAR(bernoulli_p, sample_p_above_mean, bernoulli_bound);
   }
@@ -175,7 +167,7 @@ class RandomNumberGeneratorTest : public ::testing::Test {
   void RngBernoulliChecks(const Dtype p, const void* cpu_data) {
     const int_tp* rng_data = static_cast<const int_tp*>(cpu_data);
     const Dtype true_mean = p;
-    const Dtype true_std = sqrt(p * (1 - p));
+    const Dtype true_std = std::sqrt(p * (1 - p));
     const Dtype bound = this->mean_bound(true_std);
     const Dtype sample_mean = this->sample_mean(rng_data);
     EXPECT_NEAR(sample_mean, true_mean, bound);
@@ -183,56 +175,28 @@ class RandomNumberGeneratorTest : public ::testing::Test {
 
 #ifndef CPU_ONLY
 
-  void RngGaussianFillGPU(const Dtype mu, const Dtype sigma, void* gpu_data) {
-    Dtype* rng_data = static_cast<Dtype*>(gpu_data);
+  void RngGaussianFillGPU(const Dtype mu, const Dtype sigma, vptr<void> gpu_data) {
+    vptr<Dtype> rng_data = vptr<Dtype>(gpu_data);
 
-    device *dc = Caffe::GetDefaultDevice();
-
-    if (dc->backend() == BACKEND_CUDA) {
-#ifdef USE_CUDA
-      caffe_gpu_rng_gaussian(sample_size_, mu, sigma, rng_data);
-#endif  // USE_CUDA
-    } else {
-#ifdef USE_GREENTEA
-      greentea_gpu_rng_gaussian<Dtype>(dc->id(), sample_size_,
-                                       mu, sigma, (cl_mem)rng_data, 0);
-#endif  // USE_GREENTEA
-    }
+    Device *dc = Caffe::GetDefaultDevice();
+    dc->rng_gaussian(sample_size_, mu, sigma, rng_data);
   }
 
-  void RngUniformFillGPU(const Dtype lower, const Dtype upper, void* gpu_data) {
+  void RngUniformFillGPU(const Dtype lower, const Dtype upper, vptr<void> gpu_data) {
     CHECK_GE(upper, lower);
-    Dtype* rng_data = static_cast<Dtype*>(gpu_data);
+    vptr<Dtype> rng_data = vptr<Dtype>(gpu_data);
 
-    device *dc = Caffe::GetDefaultDevice();
+    Device *dc = Caffe::GetDefaultDevice();
 
-    if (dc->backend() == BACKEND_CUDA) {
-#ifdef USE_CUDA
-      caffe_gpu_rng_uniform(sample_size_, lower, upper, rng_data);
-#endif  // USE_CUDA
-    } else {
-#ifdef USE_GREENTEA
-      greentea_gpu_rng_uniform<Dtype>(dc->id(), sample_size_,
-                                      lower, upper, (cl_mem)rng_data, 0);
-#endif  // USE_GREENTEA
-    }
+    dc->rng_uniform(sample_size_, lower, upper, rng_data);
   }
 
   // Fills with uniform integers in [0, UINT_MAX] using 2 argument form of
   // caffe_gpu_rng_uniform.
-  void RngUniformIntFillGPU(void* gpu_data) {
-    uint_tp* rng_data = static_cast<uint_tp*>(gpu_data);
-    device *dc = Caffe::GetDefaultDevice();
-
-    if (dc->backend() == BACKEND_CUDA) {
-#ifdef USE_CUDA
-      caffe_gpu_rng_uniform(sample_size_, (uint_tpc*)rng_data);  // NOLINT
-#endif  // USE_CUDA
-    } else {
-#ifdef USE_GREENTEA
-      greentea_gpu_rng_uniform(dc->id(), sample_size_, (cl_mem)rng_data, 0);
-#endif  // USE_GREENTEA
-    }
+  void RngUniformIntFillGPU(vptr<void> gpu_data) {
+    vptr<uint_tp> rng_data = vptr<uint_tp>(gpu_data);
+    Device *dc = Caffe::GetDefaultDevice();
+    dc->rng_uniform(sample_size_, rng_data);  // NOLINT
 }
 
 #endif
@@ -251,7 +215,7 @@ class RandomNumberGeneratorTest : public ::testing::Test {
   shared_ptr<SyncedMemory> int_data_2_;
 };
 
-TYPED_TEST_CASE(RandomNumberGeneratorTest, TestDtypes);
+TYPED_TEST_CASE(RandomNumberGeneratorTest, TestDtypesFloat);
 
 TYPED_TEST(RandomNumberGeneratorTest, TestRngGaussian) {
   const TypeParam mu = 0;
@@ -325,8 +289,8 @@ TYPED_TEST(RandomNumberGeneratorTest, TestRngGaussianTimesGaussian) {
   }
 
   // Check that result has mean 0.
-  TypeParam mu_product = pow(mu, 2);
-  TypeParam sigma_product = sqrt(pow(sigma, 2) / 2);
+  TypeParam mu_product = pow(mu, TypeParam(2));
+  TypeParam sigma_product = std::sqrt(TypeParam(pow(sigma, TypeParam(2)) / 2));
   this->RngGaussianChecks(mu_product, sigma_product, gaussian_data_1);
 }
 
@@ -437,7 +401,7 @@ TYPED_TEST(RandomNumberGeneratorTest, TestRngBernoulliTimesBernoulli) {
   // Check that resulting product has roughly p_a * p_b ones.
   const TypeParam sample_p = this->sample_mean(bernoulli_data_a);
   const TypeParam true_mean = p_a * p_b;
-  const TypeParam true_std = sqrt(true_mean * (1 - true_mean));
+  const TypeParam true_std = std::sqrt(true_mean * (1 - true_mean));
   const TypeParam bound = this->mean_bound(true_std);
   EXPECT_NEAR(true_mean, sample_p, bound);
 }
@@ -447,7 +411,7 @@ TYPED_TEST(RandomNumberGeneratorTest, TestRngBernoulliTimesBernoulli) {
 TYPED_TEST(RandomNumberGeneratorTest, TestRngGaussianGPU) {
   const TypeParam mu = 0;
   const TypeParam sigma = 1;
-  void* gaussian_gpu_data = this->data_->mutable_gpu_data();
+  vptr<TypeParam> gaussian_gpu_data = this->data_->mutable_gpu_data();
   this->RngGaussianFillGPU(mu, sigma, gaussian_gpu_data);
   const void* gaussian_data = this->data_->cpu_data();
   this->RngGaussianChecks(mu, sigma, gaussian_data);
@@ -457,7 +421,7 @@ TYPED_TEST(RandomNumberGeneratorTest, TestRngGaussianGPU) {
 TYPED_TEST(RandomNumberGeneratorTest, TestRngGaussian2GPU) {
   const TypeParam mu = -2;
   const TypeParam sigma = 3;
-  void* gaussian_gpu_data = this->data_->mutable_gpu_data();
+  vptr<TypeParam> gaussian_gpu_data = this->data_->mutable_gpu_data();
   this->RngGaussianFillGPU(mu, sigma, gaussian_gpu_data);
   const void* gaussian_data = this->data_->cpu_data();
   this->RngGaussianChecks(mu, sigma, gaussian_data);
@@ -467,7 +431,7 @@ TYPED_TEST(RandomNumberGeneratorTest, TestRngGaussian2GPU) {
 TYPED_TEST(RandomNumberGeneratorTest, TestRngUniformGPU) {
   const TypeParam lower = 0;
   const TypeParam upper = 1;
-  void* uniform_gpu_data = this->data_->mutable_gpu_data();
+  vptr<TypeParam> uniform_gpu_data = this->data_->mutable_gpu_data();
   this->RngUniformFillGPU(lower, upper, uniform_gpu_data);
   const void* uniform_data = this->data_->cpu_data();
   this->RngUniformChecks(lower, upper, uniform_data);
@@ -477,7 +441,7 @@ TYPED_TEST(RandomNumberGeneratorTest, TestRngUniformGPU) {
 TYPED_TEST(RandomNumberGeneratorTest, TestRngUniform2GPU) {
   const TypeParam lower = -7.3;
   const TypeParam upper = -2.3;
-  void* uniform_gpu_data = this->data_->mutable_gpu_data();
+  vptr<TypeParam> uniform_gpu_data = this->data_->mutable_gpu_data();
   this->RngUniformFillGPU(lower, upper, uniform_gpu_data);
   const void* uniform_data = this->data_->cpu_data();
   this->RngUniformChecks(lower, upper, uniform_data);
@@ -485,8 +449,8 @@ TYPED_TEST(RandomNumberGeneratorTest, TestRngUniform2GPU) {
 
 
 TYPED_TEST(RandomNumberGeneratorTest, TestRngUniformIntGPU) {
-  uint_tp* uniform_uint_gpu_data =
-      static_cast<uint_tp*>(this->int_data_->mutable_gpu_data());
+  vptr<uint_tp> uniform_uint_gpu_data =
+      vptr<uint_tp>(this->int_data_->mutable_gpu_data());
   this->RngUniformIntFillGPU(uniform_uint_gpu_data);
   const uint_tp* uniform_uint_data =
       static_cast<const uint_tp*>(this->int_data_->cpu_data());
@@ -506,13 +470,13 @@ TYPED_TEST(RandomNumberGeneratorTest, TestRngGaussianTimesGaussianGPU) {
   const TypeParam sigma = 1;
 
   // Sample from 0 mean Gaussian.
-  TypeParam* gaussian_gpu_data_1 =
-      static_cast<TypeParam*>(this->data_->mutable_gpu_data());
+  vptr<TypeParam> gaussian_gpu_data_1 =
+      vptr<TypeParam>(this->data_->mutable_gpu_data());
   this->RngGaussianFillGPU(mu, sigma, gaussian_gpu_data_1);
 
   // Sample from 0 mean Gaussian again.
-  TypeParam* gaussian_gpu_data_2 =
-      static_cast<TypeParam*>(this->data_2_->mutable_gpu_data());
+  vptr<TypeParam> gaussian_gpu_data_2 =
+      vptr<TypeParam>(this->data_2_->mutable_gpu_data());
   this->RngGaussianFillGPU(mu, sigma, gaussian_gpu_data_2);
 
   // Multiply Gaussians.
@@ -526,8 +490,8 @@ TYPED_TEST(RandomNumberGeneratorTest, TestRngGaussianTimesGaussianGPU) {
 
   // Check that result does not violate checked properties of Gaussian
   // (though it is not actually a Gaussian).
-  TypeParam mu_product = pow(mu, 2);
-  TypeParam sigma_product = sqrt(pow(sigma, 2) / 2);
+  TypeParam mu_product = pow(mu, TypeParam(2));
+  TypeParam sigma_product = std::sqrt(TypeParam(pow(sigma, TypeParam(2)) / 2));
   this->RngGaussianChecks(mu_product, sigma_product, gaussian_data_1);
 }
 
@@ -536,15 +500,15 @@ TYPED_TEST(RandomNumberGeneratorTest, TestRngUniformTimesUniformGPU) {
   // Sample from Uniform on [-2, 2].
   const TypeParam lower_1 = -2;
   const TypeParam upper_1 = -lower_1;
-  TypeParam* uniform_gpu_data_1 =
-      static_cast<TypeParam*>(this->data_->mutable_gpu_data());
+  vptr<TypeParam> uniform_gpu_data_1 = vptr<TypeParam>(
+      this->data_->mutable_gpu_data());
   this->RngUniformFillGPU(lower_1, upper_1, uniform_gpu_data_1);
 
   // Sample from Uniform on [-3, 3].
   const TypeParam lower_2 = -3;
   const TypeParam upper_2 = -lower_2;
-  TypeParam* uniform_gpu_data_2 =
-      static_cast<TypeParam*>(this->data_2_->mutable_gpu_data());
+  vptr<TypeParam> uniform_gpu_data_2 = vptr<TypeParam>(
+      this->data_2_->mutable_gpu_data());
   this->RngUniformFillGPU(lower_2, upper_2, uniform_gpu_data_2);
 
   // Multiply Uniforms.

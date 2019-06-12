@@ -5,9 +5,10 @@
 
 namespace caffe {
 
-template <typename Dtype>
-void SplitLayer<Dtype>::Reshape(const vector<Blob<Dtype>*>& bottom,
-      const vector<Blob<Dtype>*>& top) {
+template<typename Dtype, typename MItype, typename MOtype>
+void SplitLayer<Dtype, MItype, MOtype>::Reshape(
+    const vector<Blob<MItype>*>& bottom,
+    const vector<Blob<MOtype>*>& top) {
   count_ = bottom[0]->count();
   for (int_tp i = 0; i < top.size(); ++i) {
     // Do not allow in-place computation in the SplitLayer.  Instead, share data
@@ -22,20 +23,30 @@ void SplitLayer<Dtype>::Reshape(const vector<Blob<Dtype>*>& bottom,
   }
 }
 
-template <typename Dtype>
-void SplitLayer<Dtype>::Forward_cpu(const vector<Blob<Dtype>*>& bottom,
-      const vector<Blob<Dtype>*>& top) {
+template<typename Dtype, typename MItype, typename MOtype>
+void SplitLayer<Dtype, MItype, MOtype>::Forward_cpu(
+    const vector<Blob<MItype>*>& bottom,
+    const vector<Blob<MOtype>*>& top) {
   for (int_tp i = 0; i < top.size(); ++i) {
-    top[i]->ShareData(*bottom[0]);
+    if (this->layer_param().bottom_shared_index_size() > 0 ||
+        this->layer_param().top_shared_index_size() > 0) {
+      // Using shared blobs, copy data instead of sharing the blob
+      caffe_copy(bottom[0]->count(), bottom[0]->cpu_data(),
+                 top[i]->mutable_cpu_data());
+    } else {
+      // Normal mode
+      top[i]->ShareData(*bottom[0]);
+    }
   }
 }
 
-template <typename Dtype>
-void SplitLayer<Dtype>::Backward_cpu(const vector<Blob<Dtype>*>& top,
-      const vector<bool>& propagate_down, const vector<Blob<Dtype>*>& bottom) {
+template<typename Dtype, typename MItype, typename MOtype>
+void SplitLayer<Dtype, MItype, MOtype>::Backward_cpu(
+    const vector<Blob<MOtype>*>& top, const vector<bool>& propagate_down,
+    const vector<Blob<MItype>*>& bottom) {
   if (!propagate_down[0]) { return; }
   if (top.size() == 1) {
-    caffe_cpu_copy(count_, top[0]->cpu_diff(), bottom[0]->mutable_cpu_diff());
+    caffe_copy(count_, top[0]->cpu_diff(), bottom[0]->mutable_cpu_diff());
     return;
   }
   caffe_add(count_, top[0]->cpu_diff(), top[1]->cpu_diff(),
@@ -53,7 +64,21 @@ void SplitLayer<Dtype>::Backward_cpu(const vector<Blob<Dtype>*>& top,
 STUB_GPU(SplitLayer);
 #endif
 
-INSTANTIATE_CLASS(SplitLayer);
+INSTANTIATE_CLASS_3T_GUARDED(SplitLayer, (half_fp), (half_fp), (half_fp));
+INSTANTIATE_CLASS_3T_GUARDED(SplitLayer, (float), (float), (float));
+INSTANTIATE_CLASS_3T_GUARDED(SplitLayer, (double), (double), (double));
+INSTANTIATE_CLASS_3T_GUARDED(SplitLayer, (uint8_t), (uint8_t), (uint8_t));
+INSTANTIATE_CLASS_3T_GUARDED(SplitLayer, (uint16_t), (uint16_t), (uint16_t));
+INSTANTIATE_CLASS_3T_GUARDED(SplitLayer, (uint32_t), (uint32_t), (uint32_t));
+INSTANTIATE_CLASS_3T_GUARDED(SplitLayer, (uint64_t), (uint64_t), (uint64_t));
+
 REGISTER_LAYER_CLASS(Split);
+REGISTER_LAYER_CLASS_INST(Split, (half_fp), (half_fp), (half_fp));
+REGISTER_LAYER_CLASS_INST(Split, (float), (float), (float));
+REGISTER_LAYER_CLASS_INST(Split, (double), (double), (double));
+REGISTER_LAYER_CLASS_INST(Split, (uint8_t), (uint8_t), (uint8_t));
+REGISTER_LAYER_CLASS_INST(Split, (uint16_t), (uint16_t), (uint16_t));
+REGISTER_LAYER_CLASS_INST(Split, (uint32_t), (uint32_t), (uint32_t));
+REGISTER_LAYER_CLASS_INST(Split, (uint64_t), (uint64_t), (uint64_t));
 
 }  // namespace caffe

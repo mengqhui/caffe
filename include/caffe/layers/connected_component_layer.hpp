@@ -14,18 +14,18 @@ namespace caffe {
 /**
  * @brief Computes a connected components map from a segmentation map.
  */
-template<typename Dtype>
-class ConnectedComponentLayer : public Layer<Dtype> {
+template<typename Dtype, typename MItype, typename MOtype>
+class ConnectedComponentLayer : public Layer<Dtype, MItype, MOtype> {
  public:
   explicit ConnectedComponentLayer(const LayerParameter& param)
-    : Layer<Dtype>(param) {
+    : Layer<Dtype, MItype, MOtype>(param) {
   }
 
-  virtual void LayerSetUp(const vector<Blob<Dtype>*>& bottom,
-                          const vector<Blob<Dtype>*>& top);
+  virtual void LayerSetUp(const vector<Blob<MItype>*>& bottom,
+                          const vector<Blob<MOtype>*>& top);
 
-  virtual void Reshape(const vector<Blob<Dtype>*>& bottom,
-                       const vector<Blob<Dtype>*>& top);
+  virtual void Reshape(const vector<Blob<MItype>*>& bottom,
+                       const vector<Blob<MOtype>*>& top);
 
   virtual inline int_tp ExactNumBottomBlobs() const {
     return 1;
@@ -40,11 +40,11 @@ class ConnectedComponentLayer : public Layer<Dtype> {
   }
 
  protected:
-    virtual void Forward_cpu(const vector<Blob<Dtype>*>& bottom,
-                             const vector<Blob<Dtype>*>& top);
-    virtual void Backward_cpu(const vector<Blob<Dtype>*>& top,
+    virtual void Forward_cpu(const vector<Blob<MItype>*>& bottom,
+                             const vector<Blob<MOtype>*>& top);
+    virtual void Backward_cpu(const vector<Blob<MOtype>*>& top,
                               const vector<bool>& propagate_down,
-                              const vector<Blob<Dtype>*>& bottom);
+                              const vector<Blob<MItype>*>& bottom);
 
  private:
      cv::Mat FindBlobs(const int maxlabel, const cv::Mat &input);

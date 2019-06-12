@@ -7,37 +7,48 @@
 #include "caffe/blob.hpp"
 #include "caffe/layer.hpp"
 #include "caffe/proto/caffe.pb.h"
-
 #include "caffe/layers/conv_layer.hpp"
-
-#include "caffe/greentea/libdnn.hpp"
+#include "caffe/libdnn/libdnn_conv.hpp"
 
 namespace caffe {
 
-template <typename Dtype>
-class LibDNNConvolutionLayer : public ConvolutionLayer<Dtype> {
+template<typename Dtype, typename MItype, typename MOtype>
+class LibDNNConvolutionLayer :
+    public BaseConvolutionLayer<Dtype, MItype, MOtype> {
  public:
   explicit LibDNNConvolutionLayer(const LayerParameter& param)
-      : ConvolutionLayer<Dtype>(param) {}
-  virtual void LayerSetUp(const vector<Blob<Dtype>*>& bottom,
-      const vector<Blob<Dtype>*>& top);
-  virtual void Reshape(const vector<Blob<Dtype>*>& bottom,
-      const vector<Blob<Dtype>*>& top);
+      : BaseConvolutionLayer<Dtype, MItype, MOtype>(param) {
+    this->deconvolution_ = false;
+  }
+  virtual void LayerSetUp(const vector<Blob<MItype>*>& bottom,
+                          const vector<Blob<MOtype>*>& top);
+  virtual void Reshape(const vector<Blob<MItype>*>& bottom,
+                       const vector<Blob<MOtype>*>& top);
   virtual ~LibDNNConvolutionLayer();
 
-  virtual void Tune(Dtype* top_data, Dtype* top_diff,
-                    Dtype* bottom_data, Dtype* bottom_diff,
+  virtual void Tune(vptr<Dtype> top_data, vptr<Dtype> top_diff,
+                    vptr<Dtype> bottom_data, vptr<Dtype> bottom_diff,
                     int_tp batch_size);
 
  protected:
-  virtual void Forward_gpu(const vector<Blob<Dtype>*>& bottom,
-      const vector<Blob<Dtype>*>& top);
-  virtual void Backward_gpu(const vector<Blob<Dtype>*>& top,
-      const vector<bool>& propagate_down, const vector<Blob<Dtype>*>& bottom);
+  virtual void Forward_cpu(const vector<Blob<MItype>*>& bottom,
+                           const vector<Blob<MOtype>*>& top) {
+    NOT_IMPLEMENTED;
+  }
+  virtual void Backward_cpu(const vector<Blob<MOtype>*>& top,
+                            const vector<bool>& propagate_down,
+                            const vector<Blob<MItype>*>& bottom) {
+    NOT_IMPLEMENTED;
+  }
 
+  virtual void Forward_gpu(const vector<Blob<MItype>*>& bottom,
+      const vector<Blob<MOtype>*>& top);
+  virtual void Backward_gpu(const vector<Blob<MOtype>*>& top,
+      const vector<bool>& propagate_down,
+      const vector<Blob<MItype>*>& bottom);
 
  private:
-  shared_ptr<LibDNNConv<Dtype> > libdnn_;
+  shared_ptr<LibDNNConv<MItype, MOtype> > libdnn_;
 };
 
 }  // namespace caffe

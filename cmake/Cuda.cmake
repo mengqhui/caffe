@@ -4,7 +4,7 @@ endif()
 
 # Known NVIDIA GPU achitectures Caffe can be compiled for.
 # This list will be used for CUDA_ARCH_NAME = All option
-set(Caffe_known_gpu_archs "20 21(20) 30 35 50 60 61")
+set(Caffe_known_gpu_archs "30 35 50 60 61")
 
 ################################################################################################
 # A function for automatic detection of GPUs installed  (if autodetection is enabled)
@@ -60,7 +60,7 @@ endfunction()
 #   caffe_select_nvcc_arch_flags(out_variable)
 function(caffe_select_nvcc_arch_flags out_variable)
   # List of arch names
-  set(__archs_names "Fermi" "Kepler" "Maxwell" "Pascal" "All" "Manual")
+  set(__archs_names "Kepler" "Maxwell" "Pascal" "All" "Manual")
   set(__archs_name_default "All")
   if(NOT CMAKE_CROSSCOMPILING)
     list(APPEND __archs_names "Auto")
@@ -87,9 +87,7 @@ function(caffe_select_nvcc_arch_flags out_variable)
     unset(CUDA_ARCH_PTX CACHE)
   endif()
 
-  if(${CUDA_ARCH_NAME} STREQUAL "Fermi")
-    set(__cuda_arch_bin "20 21(20)")
-  elseif(${CUDA_ARCH_NAME} STREQUAL "Kepler")
+  if(${CUDA_ARCH_NAME} STREQUAL "Kepler")
     set(__cuda_arch_bin "30 35")
   elseif(${CUDA_ARCH_NAME} STREQUAL "Maxwell")
     set(__cuda_arch_bin "50")
@@ -112,6 +110,12 @@ function(caffe_select_nvcc_arch_flags out_variable)
 
   set(__nvcc_flags "")
   set(__nvcc_archs_readable "")
+
+  string(COMPARE LESS "${CUDA_VERSION}" "9.0" iscudaolderthan90)
+  if(NOT iscudaolderthan90)
+    string(REPLACE "21(20)" "" __cuda_arch_bin "${__cuda_arch_bin}")
+    string(REPLACE "20" "" __cuda_arch_bin "${__cuda_arch_bin}")
+  endif()
 
   # Tell NVCC to add binaries for the specified GPUs
   foreach(__arch ${__cuda_arch_bin})
@@ -145,20 +149,23 @@ macro(caffe_cuda_compile objlist_variable)
   foreach(var CMAKE_CXX_FLAGS CMAKE_CXX_FLAGS_RELEASE CMAKE_CXX_FLAGS_DEBUG)
     set(${var}_backup_in_cuda_compile_ "${${var}}")
 
-    # we remove /EHa as it generates warnings under windows
+    # We remove /EHa as it generates warnings under windows
     string(REPLACE "/EHa" "" ${var} "${${var}}")
 
   endforeach()
 
   if(UNIX OR APPLE)
-    list(APPEND CUDA_NVCC_FLAGS -Xcompiler -fPIC -std c++11)
+    list(APPEND CUDA_NVCC_FLAGS -Xcompiler -fPIC,-std=c++11)
   endif()
 
   if(APPLE)
     list(APPEND CUDA_NVCC_FLAGS -Xcompiler -Wno-unused-function)
   endif()
 
-  cuda_compile(cuda_objcs ${ARGN})
+  # Skip NVCC in favor of C++ compiler (may disable certain CUDA backend parts)
+  if(NOT FORCE_COMPILE_CU_AS_CPP)
+    cuda_compile(cuda_objcs ${ARGN})
+  endif()
 
   foreach(var CMAKE_CXX_FLAGS CMAKE_CXX_FLAGS_RELEASE CMAKE_CXX_FLAGS_DEBUG)
     set(${var} "${${var}_backup_in_cuda_compile_}")
@@ -246,8 +253,9 @@ endfunction()
 ###  Non macro section
 ################################################################################################
 
-find_package(CUDA 5.5 QUIET)
-find_cuda_helper_libs(curand)  # cmake 2.8.7 compartibility which doesn't search for curand
+find_package(CUDA 7.5 QUIET)
+find_cuda_helper_libs(curand)  # cmake 2.8.7 compatibility which doesn't search for curand
+find_cuda_helper_libs(nvrtc)  # cmake 3.9.6 compatibility which doesn't search for nvrtc
 
 if(NOT CUDA_FOUND)
   return()
@@ -256,8 +264,11 @@ endif()
 set(HAVE_CUDA TRUE)
 message(STATUS "CUDA detected: " ${CUDA_VERSION})
 list(APPEND Caffe_INCLUDE_DIRS PUBLIC ${CUDA_INCLUDE_DIRS})
-list(APPEND Caffe_LINKER_LIBS PUBLIC ${CUDA_CUDART_LIBRARY}
-                                     ${CUDA_curand_LIBRARY} ${CUDA_CUBLAS_LIBRARIES})
+list(APPEND Caffe_LINKER_LIBS PUBLIC ${CUDA_CUDA_LIBRARY}
+								     ${CUDA_CUDART_LIBRARY}
+                                     ${CUDA_curand_LIBRARY}
+                                     ${CUDA_nvrtc_LIBRARY}
+                                     ${CUDA_CUBLAS_LIBRARIES})
 list(APPEND Caffe_DEFINITIONS PUBLIC -DUSE_CUDA)
 
 # cudnn detection

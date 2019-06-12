@@ -6,6 +6,7 @@
 
 #include "caffe/net.hpp"
 #include "caffe/proto/caffe.pb.h"
+#include "boost/algorithm/string.hpp"
 #include "caffe/solver.hpp"
 #include "caffe/util/format.hpp"
 #include "caffe/util/io.hpp"
@@ -29,18 +30,14 @@ SolverAction::Enum Solver<Dtype>::GetRequestedAction() {
 }
 
 template<typename Dtype>
-Solver<Dtype>::Solver(const SolverParameter& param)
-    : net_(),
-      device_(Caffe::GetDefaultDevice()), callbacks_(),
-              requested_early_exit_(false) {
+Solver<Dtype>::Solver(const SolverParameter& param, Device* dev)
+    : SolverBase(dev), net_() {
   Init(param);
 }
 
 template<typename Dtype>
-Solver<Dtype>::Solver(const string& param_file)
-    : net_(),
-      device_(Caffe::GetDefaultDevice()), callbacks_(),
-              requested_early_exit_(false) {
+Solver<Dtype>::Solver(const string& param_file, Device* dev)
+    : SolverBase(dev), net_() {
   SolverParameter param;
   ReadSolverParamsFromTextFileOrDie(param_file, &param);
   Init(param);
@@ -52,6 +49,7 @@ void Solver<Dtype>::Init(const SolverParameter& param) {
   LOG_IF(INFO, Caffe::root_solver()) << "Initializing solver from parameters: "
     << std::endl << param.DebugString();
   param_ = param;
+  param_.set_data_type(proto_data_type<Dtype>());
   CHECK_GE(param_.average_loss(), 1) << "average_loss should be non-negative.";
   CheckSnapshotWritePermissions();
   if (param_.random_seed() >= 0) {
@@ -60,26 +58,29 @@ void Solver<Dtype>::Init(const SolverParameter& param) {
   }
   // Scaffolding code
   InitTrainNet();
+  InitTestNets();
   if (Caffe::root_solver()) {
-    InitTestNets();
     LOG(INFO) << "Solver scaffolding done.";
   }
   iter_ = 0;
   current_step_ = 0;
 }
 
-
-template<typename Dtype>
-void Solver<Dtype>::UpdateSolverParams(const SolverParameter& param) {
-  param_ = param;
+// Load weights from the caffemodel(s) specified in "weights" solver parameter
+// into the train and test nets.
+template <typename Dtype>
+void LoadNetWeights(shared_ptr<Net<Dtype> > net,
+    const std::string& model_list) {
+  std::vector<std::string> model_names;
+  boost::split(model_names, model_list, boost::is_any_of(","));
+  for (int i = 0; i < model_names.size(); ++i) {
+    boost::trim(model_names[i]);
+    LOG(INFO) << "Finetuning from " << model_names[i];
+    net->CopyTrainedLayersFrom(model_names[i]);
+  }
 }
 
-template<typename Dtype>
-SolverParameter Solver<Dtype>::GetSolverParams() {
-  return param_;
-}
-
-template<typename Dtype>
+template <typename Dtype>
 void Solver<Dtype>::InitTrainNet() {
   const int_tp num_train_nets = param_.has_net() + param_.has_net_param()
       + param_.has_train_net() + param_.has_train_net_param();
@@ -118,11 +119,13 @@ void Solver<Dtype>::InitTrainNet() {
   net_state.MergeFrom(param_.train_state());
   net_param.mutable_state()->CopyFrom(net_state);
   net_.reset(new Net<Dtype>(net_param, this->device_));
+  for (int w_idx = 0; w_idx < param_.weights_size(); ++w_idx) {
+    LoadNetWeights(net_, param_.weights(w_idx));
+  }
 }
 
 template<typename Dtype>
 void Solver<Dtype>::InitTestNets() {
-  CHECK(Caffe::root_solver());
   const bool has_net_param = param_.has_net_param();
   const bool has_net_file = param_.has_net();
   const int_tp num_generic_nets = has_net_param + has_net_file;
@@ -196,6 +199,9 @@ void Solver<Dtype>::InitTestNets() {
         << "Creating test net (#" << i << ") specified by " << sources[i];
     test_nets_[i].reset(new Net<Dtype>(net_params[i], this->device_));
     test_nets_[i]->set_debug_info(param_.debug_info());
+    for (int w_idx = 0; w_idx < param_.weights_size(); ++w_idx) {
+      LoadNetWeights(test_nets_[i], param_.weights(w_idx));
+    }
   }
 }
 
@@ -243,14 +249,23 @@ Dtype Solver<Dtype>::Step(int_tp iters) {
           << param_.display() << " iters), loss = " << smoothed_loss_;
       iteration_timer_.Start();
       iterations_last_ = iter_;
-      const vector<Blob<Dtype>*>& result = net_->output_blobs();
+      const vector<BlobBase*>& result = net_->output_blobs();
       int_tp score_index = 0;
       for (int_tp j = 0; j < result.size(); ++j) {
-        const Dtype* result_vec = result[j]->cpu_data();
+        int_tp buffer_id = -1;
+        const Dtype* result_vec = nullptr;
+        if (result[j]->data_type() == proto_data_type<Dtype>()) {
+          result_vec = static_cast<Blob<Dtype>*>(result[j])->cpu_data();
+        } else {
+          Dtype* temp_result_vec = this->device_->template Buffer<Dtype>(
+            result[j]->shape(), &buffer_id)->mutable_cpu_data();
+          result[j]->cpu_data(temp_result_vec);
+          result_vec = temp_result_vec;
+        }
         const string& output_name =
-        net_->blob_names()[net_->output_blob_indices()[j]];
+            net_->blob_names()[net_->output_blob_indices()[j]];
         const Dtype loss_weight =
-        net_->blob_loss_weights()[net_->output_blob_indices()[j]];
+            net_->blob_loss_weights()[net_->output_blob_indices()[j]];
         for (int_tp k = 0; k < result[j]->count(); ++k) {
           ostringstream loss_msg_stream;
           if (loss_weight) {
@@ -261,16 +276,13 @@ Dtype Solver<Dtype>::Step(int_tp iters) {
               << score_index++ << ": " << output_name << " = "
               << result_vec[k] << loss_msg_stream.str();
         }
+        this->device_->unlock_buffer(&buffer_id);
       }
     }
     for (int_tp i = 0; i < callbacks_.size(); ++i) {
       callbacks_[i]->on_gradients_ready();
     }
     ApplyUpdate();
-
-    // Increment the internal iter_ counter -- its value should always indicate
-    // the number of times the weights have been updated.
-    ++iter_;
 
     SolverAction::Enum request = GetRequestedAction();
 
@@ -377,26 +389,46 @@ void Solver<Dtype>::Test(const int_tp test_net_id) {
     }
 
     Dtype iter_loss;
-    const vector<Blob<Dtype>*>& result =
+    const vector<BlobBase*>& result =
         test_net->Forward(&iter_loss);
     if (param_.test_compute_loss()) {
       loss += iter_loss;
     }
     if (i == 0) {
       for (int_tp j = 0; j < result.size(); ++j) {
-        const Dtype* result_vec = result[j]->cpu_data();
+        int_tp buffer_id = -1;
+        const Dtype* result_vec = nullptr;
+        if (result[j]->data_type() == proto_data_type<Dtype>()) {
+          result_vec = static_cast<Blob<Dtype>*>(result[j])->cpu_data();
+        } else {
+          Dtype* temp_result_vec = this->device_->template Buffer<Dtype>(
+            result[j]->shape(), &buffer_id)->mutable_cpu_data();
+          result[j]->cpu_data(temp_result_vec);
+          result_vec = temp_result_vec;
+        }
         for (int_tp k = 0; k < result[j]->count(); ++k) {
           test_score.push_back(result_vec[k]);
           test_score_output_id.push_back(j);
         }
+        this->device_->unlock_buffer(&buffer_id);
       }
     } else {
       int_tp idx = 0;
       for (int_tp j = 0; j < result.size(); ++j) {
-        const Dtype* result_vec = result[j]->cpu_data();
+        int_tp buffer_id = -1;
+        const Dtype* result_vec = nullptr;
+        if (result[j]->data_type() == proto_data_type<Dtype>()) {
+          result_vec = static_cast<Blob<Dtype>*>(result[j])->cpu_data();
+        } else {
+          Dtype* temp_result_vec = this->device_->template Buffer<Dtype>(
+            result[j]->shape(), &buffer_id)->mutable_cpu_data();
+          result[j]->cpu_data(temp_result_vec);
+          result_vec = temp_result_vec;
+        }
         for (int_tp k = 0; k < result[j]->count(); ++k) {
           test_score[idx++] += result_vec[k];
         }
+        this->device_->unlock_buffer(&buffer_id);
       }
     }
   }
@@ -509,7 +541,8 @@ void Solver<Dtype>::UpdateSmoothedLoss(Dtype loss, int_tp start_iter,
   }
 }
 
-INSTANTIATE_CLASS(Solver);
+class SolverBase;
+INSTANTIATE_CLASS_1T_GUARDED(Solver, (half_fp)(float)(double));
 
 }  // namespace caffe
 

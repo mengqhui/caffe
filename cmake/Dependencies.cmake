@@ -5,7 +5,7 @@ set(Caffe_DEFINITIONS "")
 set(Caffe_COMPILE_OPTIONS "")
 
 # ---[ Boost
-find_package(Boost 1.46 REQUIRED COMPONENTS system thread filesystem)
+find_package(Boost 1.54 REQUIRED COMPONENTS system thread filesystem)
 list(APPEND Caffe_INCLUDE_DIRS PUBLIC ${Boost_INCLUDE_DIRS})
 list(APPEND Caffe_DEFINITIONS PUBLIC -DBOOST_ALL_NO_LIB)
 list(APPEND Caffe_LINKER_LIBS PUBLIC ${Boost_LIBRARIES})
@@ -47,6 +47,9 @@ list(APPEND Caffe_LINKER_LIBS PUBLIC ${GFLAGS_LIBRARIES})
 # ---[ Google-protobuf
 include(cmake/ProtoBuf.cmake)
 
+# ---[ PreBuild code generation
+include(cmake/PreBuild.cmake)
+
 # ---[ HDF5
 if(MSVC)
   # Find HDF5 using it's hdf5-config.cmake file with MSVC
@@ -61,10 +64,6 @@ else()
     find_package(HDF5 COMPONENTS HL REQUIRED)
   endif()
 endif()
-
-include_directories(SYSTEM ${HDF5_INCLUDE_DIRS} ${HDF5_HL_INCLUDE_DIR})
-list(APPEND Caffe_LINKER_LIBS PUBLIC ${HDF5_LIBRARIES} ${HDF5_HL_LIBRARIES})
-list(APPEND Caffe_INCLUDE_DIRS PUBLIC ${HDF5_INCLUDE_DIRS})
 
 # This code is taken from https://github.com/sh1r0/caffe-android-lib
 if(USE_HDF5)
@@ -95,6 +94,14 @@ if(USE_LEVELDB)
   list(APPEND Caffe_DEFINITIONS PUBLIC -DUSE_LEVELDB)
 endif()
 
+# ---[ SQLite
+if(USE_SQLITE)
+  find_package(SQLite REQUIRED)
+  list(APPEND Caffe_INCLUDE_DIRS PUBLIC ${SQLITE3_INCLUDE_DIRS})
+  list(APPEND Caffe_LINKER_LIBS PUBLIC ${SQLITE3_LIBRARIES})
+  list(APPEND Caffe_DEFINITIONS PUBLIC -DUSE_SQLITE)
+endif()
+
 # ---[ Snappy
 if(USE_LEVELDB)
   find_package(Snappy REQUIRED)
@@ -102,30 +109,49 @@ if(USE_LEVELDB)
   list(APPEND Caffe_LINKER_LIBS PRIVATE ${Snappy_LIBRARIES})
 endif()
 
-# ---[ CUDA
-include(cmake/Cuda.cmake)
-if(NOT USE_CUDA)
-  message(STATUS "-- CUDA is disabled. Building without it...")
-elseif(NOT HAVE_CUDA)
-  set(USE_CUDA OFF)
-  message(WARNING "-- CUDA is not detected by cmake. Building without it...")
+# --- [Gemmlowp
+if (USE_GEMMLOWP)
+  find_package(Gemmlowp)
+  if (NOT GEMMLOWP_FOUND)
+    message(FATAL_ERROR "Gemmlowp required but not found.")
+  endif()
+  list(APPEND Caffe_INCLUDE_DIRS PUBLIC "${GEMMLOWP_INCLUDE_DIRS}")
+  list(APPEND Caffe_DEFINITIONS PUBLIC -DUSE_GEMMLOWP)
 endif()
 
-# ---[ ViennaCL
-if (USE_GREENTEA)
-  find_package(ViennaCL)
-  if (NOT ViennaCL_FOUND)
-    message(FATAL_ERROR "ViennaCL required for GREENTEA but not found.")
+# -- [ HSA
+if (USE_HSA)
+  find_package(HSA)
+  if (NOT HSA_FOUND)
+    message(FATAL_ERROR "HSA required but not found.")
+  endif()
+  list(APPEND Caffe_INCLUDE_DIRS PUBLIC "${HSA_RUNTIME_INCLUDE_DIR}")
+  list(APPEND Caffe_LINKER_LIBS PUBLIC "${HSA_RUNTIME_LIBRARY}")
+  list(APPEND Caffe_DEFINITIONS PUBLIC -DUSE_HSA)
+endif()
+
+# -- [ HIP
+if (USE_HIP)
+  find_package(HIP)
+    if (NOT HIP_FOUND)
+    message(FATAL_ERROR "HIP required but not found.")
   endif()
   list(APPEND Caffe_INCLUDE_DIRS PUBLIC "${ViennaCL_INCLUDE_DIRS}")
   list(APPEND Caffe_LINKER_LIBS PUBLIC "${ViennaCL_LIBRARIES}")
-  list(APPEND Caffe_DEFINITIONS PUBLIC -DUSE_GREENTEA)
+  list(APPEND Caffe_DEFINITIONS PUBLIC -DUSE_HIP)
+endif()
+
+# ---[ ViennaCL
+if (USE_OPENCL)
+  find_package(ViennaCL)
+  if (NOT ViennaCL_FOUND)
+    message(FATAL_ERROR "ViennaCL required for OpenCL backend but not found.")
+  endif()
+  list(APPEND Caffe_INCLUDE_DIRS PUBLIC "${ViennaCL_INCLUDE_DIRS}")
+  list(APPEND Caffe_LINKER_LIBS PUBLIC "${ViennaCL_LIBRARIES}")
+  list(APPEND Caffe_DEFINITIONS PUBLIC -DUSE_OPENCL)
   if(ViennaCL_WITH_OPENCL)
     list(APPEND Caffe_DEFINITIONS PUBLIC -DVIENNACL_WITH_OPENCL)
-  endif()
-
-  if(USE_LIBDNN)
-    list(APPEND Caffe_DEFINITIONS PRIVATE -DUSE_LIBDNN)
   endif()
 
   if(USE_INTEL_SPATIAL)
@@ -158,7 +184,21 @@ if (USE_GREENTEA)
   endif()
 endif()
 
-if (NOT USE_GREENTEA AND NOT USE_CUDA)
+# ---[ LIBDNN
+if(USE_LIBDNN)
+  list(APPEND Caffe_DEFINITIONS PUBLIC -DUSE_LIBDNN)
+endif()
+
+# ---[ CUDA
+include(cmake/Cuda.cmake)
+if(NOT USE_CUDA)
+  message(STATUS "-- CUDA is disabled. Building without it...")
+elseif(NOT HAVE_CUDA)
+  set(USE_CUDA OFF)
+  message(WARNING "-- CUDA is not detected by cmake. Building without it...")
+endif()
+
+if (NOT USE_OPENCL AND NOT USE_CUDA)
   if (NOT CPU_ONLY)
     set(CPU_ONLY ON)
     message(STATUS "-- NO GPU enabled by cmake. Buildign with CPU_ONLY...")
@@ -166,9 +206,39 @@ if (NOT USE_GREENTEA AND NOT USE_CUDA)
   list(APPEND Caffe_DEFINITIONS PUBLIC -DCPU_ONLY)
 endif()
 
+if(USE_HALF)
+  list(APPEND Caffe_DEFINITIONS PUBLIC -DUSE_HALF)
+endif()
+
+if(USE_SINGLE)
+  list(APPEND Caffe_DEFINITIONS PUBLIC -DUSE_SINGLE)
+endif()
+
+if(USE_DOUBLE)
+  list(APPEND Caffe_DEFINITIONS PUBLIC -DUSE_DOUBLE)
+endif()
+
+if(USE_INT_QUANT_8)
+  list(APPEND Caffe_DEFINITIONS PUBLIC -DUSE_INT_QUANT_8)
+endif()
+
+if(USE_INT_QUANT_16)
+  list(APPEND Caffe_DEFINITIONS PUBLIC -DUSE_INT_QUANT_16)
+endif()
+
+if(USE_INT_QUANT_32)
+  list(APPEND Caffe_DEFINITIONS PUBLIC -DUSE_INT_QUANT_32)
+endif()
+
+if(USE_INT_QUANT_64)
+  list(APPEND Caffe_DEFINITIONS PUBLIC -DUSE_INT_QUANT_64)
+endif()
+
+
+
 # ---[ clBLAS
 if (USE_CLBLAS AND NOT USE_ISAAC)
-  find_package(clBLAS)
+  find_package(clBLAS REQUIRED)
   if (NOT CLBLAS_FOUND)
     message(FATAL_ERROR "clBLAS required but not found.")
   endif()
@@ -179,7 +249,7 @@ endif()
 
 # ---[ ISAAC
 if (USE_ISAAC)
-  find_package(ISAAC)
+  find_package(ISAAC REQUIRED)
   if (NOT ISAAC_FOUND)
     message(FATAL_ERROR "ISAAC required but not found.")
   endif()
@@ -190,8 +260,10 @@ endif()
 # ---[ CLBlast
 if (USE_CLBLAST)
   find_package(CLBlast REQUIRED)
-  message(STATUS "CLBlast found")
-  list(APPEND Caffe_LINKER_LIBS PUBLIC clblast)
+  if (NOT CLBLAST_FOUND)
+    message(FATAL_ERROR "CLBlast required but not found.")
+  endif()
+  list(APPEND Caffe_LINKER_LIBS PUBLIC ${CLBLAST_LIBRARY})
   list(APPEND Caffe_DEFINITIONS PUBLIC -DUSE_CLBLAST)
 endif()
 
@@ -229,6 +301,7 @@ if(USE_OPENMP)
 	  list(APPEND Caffe_LINKER_LIBS PRIVATE ${OpenMP_CXX_FLAGS})
 	  list(APPEND Caffe_COMPILE_OPTIONS PRIVATE ${OpenMP_CXX_FLAGS})
 	endif()
+	list(APPEND Caffe_DEFINITIONS PUBLIC -DUSE_OPENMP)
 endif()
 
 # ---[ BLAS

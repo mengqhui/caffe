@@ -32,8 +32,8 @@ TEST_F(CommonTest, TestBrewMode) {
 }
 
 TEST_F(CommonTest, TestRandSeedCPU) {
-  SyncedMemory data_a(10 * sizeof(int), Caffe::GetDefaultDevice(), INT32);
-  SyncedMemory data_b(10 * sizeof(int), Caffe::GetDefaultDevice(), INT32);
+  SyncedMemory data_a(10 * sizeof(int), Caffe::GetDefaultDevice());
+  SyncedMemory data_b(10 * sizeof(int), Caffe::GetDefaultDevice());
   Caffe::set_random_seed(1701, Caffe::GetDefaultDevice());
   caffe_rng_bernoulli(10, 0.5, static_cast<int*>(data_a.mutable_cpu_data()));
 
@@ -49,20 +49,22 @@ TEST_F(CommonTest, TestRandSeedCPU) {
 #ifndef CPU_ONLY  // GPU Caffe singleton test.
 
 TEST_F(CommonTest, TestRandSeedGPU) {
-  device *dc = Caffe::GetDefaultDevice();
+  Device *dc = Caffe::GetDefaultDevice();
 
   if (dc->backend() == BACKEND_CUDA) {
 #ifdef USE_CUDA
     SyncedMemory data_a(10 * sizeof(unsigned int),
-                        Caffe::GetDefaultDevice(), UINT16);
+                        Caffe::GetDefaultDevice());
     SyncedMemory data_b(10 * sizeof(unsigned int),
-                        Caffe::GetDefaultDevice(), UINT16);
+                        Caffe::GetDefaultDevice());
     Caffe::set_random_seed(1701, Caffe::GetDefaultDevice());
     CURAND_CHECK(curandGenerate(Caffe::curand_generator(),
-          static_cast<unsigned int*>(data_a.mutable_gpu_data()), 10));
+          static_cast<unsigned int*>(data_a.mutable_gpu_data().get_cuda_ptr()),
+          10));
     Caffe::set_random_seed(1701, Caffe::GetDefaultDevice());
     CURAND_CHECK(curandGenerate(Caffe::curand_generator(),
-          static_cast<unsigned int*>(data_b.mutable_gpu_data()), 10));
+          static_cast<unsigned int*>(data_b.mutable_gpu_data().get_cuda_ptr()),
+          10));
     for (int i = 0; i < 10; ++i) {
       EXPECT_EQ(((const unsigned int*)(data_a.cpu_data()))[i],
           ((const unsigned int*)(data_b.cpu_data()))[i]);

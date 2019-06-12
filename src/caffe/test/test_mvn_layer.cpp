@@ -33,12 +33,12 @@ class MVNLayerTest : public MultiDeviceTest<TypeParam> {
   vector<Blob<Dtype>*> blob_top_vec_;
 };
 
-TYPED_TEST_CASE(MVNLayerTest, TestDtypesAndDevices);
+TYPED_TEST_CASE(MVNLayerTest, TestDtypesFloatAndDevices);
 
 TYPED_TEST(MVNLayerTest, TestForward) {
   typedef typename TypeParam::Dtype Dtype;
   LayerParameter layer_param;
-  MVNLayer<Dtype> layer(layer_param);
+  MVNLayer<Dtype, Dtype, Dtype> layer(layer_param);
   layer.SetUp(this->blob_bottom_vec_, this->blob_top_vec_);
   layer.Forward(this->blob_bottom_vec_, this->blob_top_vec_);
   // Test mean
@@ -60,7 +60,8 @@ TYPED_TEST(MVNLayerTest, TestForward) {
       sum /= height * width;
       var /= height * width;
 
-      const Dtype kErrorBound = 0.001;
+      const Dtype kErrorBound = std::is_same<Dtype, half_fp>::value ?
+                                1e-1 : 1e-3;
       // expect zero mean
       EXPECT_NEAR(0, sum, kErrorBound);
       // expect unit variance
@@ -74,7 +75,7 @@ TYPED_TEST(MVNLayerTest, TestForwardMeanOnly) {
   LayerParameter layer_param;
   CHECK(google::protobuf::TextFormat::ParseFromString(
       "mvn_param{normalize_variance: false}", &layer_param));
-  MVNLayer<Dtype> layer(layer_param);
+  MVNLayer<Dtype, Dtype, Dtype> layer(layer_param);
   layer.SetUp(this->blob_bottom_vec_, this->blob_top_vec_);
   layer.Forward(this->blob_bottom_vec_, this->blob_top_vec_);
   // Test mean
@@ -95,7 +96,8 @@ TYPED_TEST(MVNLayerTest, TestForwardMeanOnly) {
       }
       sum /= height * width;
 
-      const Dtype kErrorBound = 0.001;
+      const Dtype kErrorBound = std::is_same<Dtype, half_fp>::value ?
+                                1e-1 : 1e-3;
       // expect zero mean
       EXPECT_NEAR(0, sum, kErrorBound);
     }
@@ -107,7 +109,7 @@ TYPED_TEST(MVNLayerTest, TestForwardAcrossChannels) {
   LayerParameter layer_param;
   CHECK(google::protobuf::TextFormat::ParseFromString(
       "mvn_param{across_channels: true}", &layer_param));
-  MVNLayer<Dtype> layer(layer_param);
+  MVNLayer<Dtype, Dtype, Dtype> layer(layer_param);
   layer.SetUp(this->blob_bottom_vec_, this->blob_top_vec_);
   layer.Forward(this->blob_bottom_vec_, this->blob_top_vec_);
   // Test mean
@@ -130,7 +132,8 @@ TYPED_TEST(MVNLayerTest, TestForwardAcrossChannels) {
     sum /= height * width * channels;
     var /= height * width * channels;
 
-    const Dtype kErrorBound = 0.001;
+    const Dtype kErrorBound = std::is_same<Dtype, half_fp>::value ?
+                              1e-1 : 1e-3;
     // expect zero mean
     EXPECT_NEAR(0, sum, kErrorBound);
     // expect unit variance
@@ -141,7 +144,7 @@ TYPED_TEST(MVNLayerTest, TestForwardAcrossChannels) {
 TYPED_TEST(MVNLayerTest, TestGradient) {
   typedef typename TypeParam::Dtype Dtype;
   LayerParameter layer_param;
-  MVNLayer<Dtype> layer(layer_param);
+  MVNLayer<Dtype, Dtype, Dtype> layer(layer_param);
   GradientChecker<Dtype> checker(1e-2, 1e-2);
   checker.CheckGradientExhaustive(&layer, this->blob_bottom_vec_,
       this->blob_top_vec_);
@@ -152,7 +155,7 @@ TYPED_TEST(MVNLayerTest, TestGradientMeanOnly) {
   LayerParameter layer_param;
   CHECK(google::protobuf::TextFormat::ParseFromString(
       "mvn_param{normalize_variance: false}", &layer_param));
-  MVNLayer<Dtype> layer(layer_param);
+  MVNLayer<Dtype, Dtype, Dtype> layer(layer_param);
   GradientChecker<Dtype> checker(1e-2, 1e-3);
   checker.CheckGradientExhaustive(&layer, this->blob_bottom_vec_,
       this->blob_top_vec_);
@@ -163,7 +166,7 @@ TYPED_TEST(MVNLayerTest, TestGradientAcrossChannels) {
   LayerParameter layer_param;
   CHECK(google::protobuf::TextFormat::ParseFromString(
       "mvn_param{across_channels: true}", &layer_param));
-  MVNLayer<Dtype> layer(layer_param);
+  MVNLayer<Dtype, Dtype, Dtype> layer(layer_param);
   GradientChecker<Dtype> checker(1e-2, 1e-3);
   checker.CheckGradientExhaustive(&layer, this->blob_bottom_vec_,
       this->blob_top_vec_);

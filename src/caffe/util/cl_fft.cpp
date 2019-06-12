@@ -4,10 +4,8 @@
 #include <cstring>
 #include "caffe/common.hpp"
 #ifndef CPU_ONLY
-#if defined(USE_GREENTEA) && defined(USE_FFT)
-#include "caffe/device.hpp"
-#include "caffe/greentea/cl_kernels.hpp"
-#include "caffe/greentea/greentea_math_functions.hpp"
+#if defined(USE_OPENCL) && defined(USE_FFT)
+#include "caffe/backend/device.hpp"
 #include "caffe/util/fft.hpp"
 
 // #define DEBUG_PROFILE
@@ -30,7 +28,7 @@ void kernel_execution_time(cl_event* event, const char* kernel_name) {
 
 void clear_gpu_fft_buffer(void* data, const int size) {
   device *dc = Caffe::GetDefaultDevice();
-  greentea_memset(dc->id(), size, 0, (cl_mem) data, 0);
+  dc->memset(dc->id(), size, 0, (cl_mem) data, 0);
 }
 
 // Copy and cyclic-shift 0 padding of weights to FFT real buffer
@@ -875,5 +873,5 @@ template void reshape_weights<double>(DtypeComplex<double>* dst,
     const int size, const int num_output, const int ch_gr);
 
 }  // namespace caffe
-#endif  // USE_GREENTEA && USE_FFT
+#endif  // USE_OPENCL && USE_FFT
 #endif  // !CPU_ONLY

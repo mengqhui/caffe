@@ -16,13 +16,13 @@ namespace caffe {
  *
  * TODO(dox): thorough documentation for Forward and proto params.
  */
-template <typename Dtype>
-class MemoryDataLayer : public BaseDataLayer<Dtype> {
+template<typename Dtype, typename MItype, typename MOtype>
+class MemoryDataLayer : public BaseDataLayer<Dtype, MItype, MOtype> {
  public:
   explicit MemoryDataLayer(const LayerParameter& param)
-      : BaseDataLayer<Dtype>(param), has_new_data_(false) {}
-  virtual void DataLayerSetUp(const vector<Blob<Dtype>*>& bottom,
-      const vector<Blob<Dtype>*>& top);
+      : BaseDataLayer<Dtype, MItype, MOtype>(param), has_new_data_(false) {}
+  virtual void DataLayerSetUp(const vector<Blob<MItype>*>& bottom,
+      const vector<Blob<MOtype>*>& top);
 
   virtual inline const char* type() const { return "MemoryData"; }
   virtual inline int_tp MinTopBlobs() const { return 1; }
@@ -47,8 +47,8 @@ class MemoryDataLayer : public BaseDataLayer<Dtype> {
   int_tp width() { return shape_[3]; }
 
  protected:
-  virtual void Forward_cpu(const vector<Blob<Dtype>*>& bottom,
-      const vector<Blob<Dtype>*>& top);
+  virtual void Forward_cpu(const vector<Blob<MItype>*>& bottom,
+      const vector<Blob<MOtype>*>& top);
 
   vector<int_tp> shape_;
   vector<int_tp> label_shape_;
@@ -58,8 +58,8 @@ class MemoryDataLayer : public BaseDataLayer<Dtype> {
   Dtype* labels_;
   int_tp n_;
   uint_tp pos_;
-  Blob<Dtype> added_data_;
-  Blob<Dtype> added_label_;
+  Blob<MItype> added_data_;
+  Blob<MItype> added_label_;
   bool has_new_data_;
   bool has_label_;
 };

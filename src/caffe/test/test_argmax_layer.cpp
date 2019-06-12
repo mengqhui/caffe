@@ -16,9 +16,17 @@ template <typename Dtype>
 class ArgMaxLayerTest : public CPUDeviceTest<Dtype> {
  protected:
   ArgMaxLayerTest()
-      : blob_bottom_(new Blob<Dtype>(10, 10, 20, 20)),
+      : blob_bottom_(new Blob<Dtype>()),
         blob_top_(new Blob<Dtype>()),
         top_k_(5) {
+    size_t max_rep = type_max_integer_representable<Dtype>();
+    if (max_rep >= 4000) {
+      blob_bottom_->Reshape(10, 10, 20, 20);
+    } else if (max_rep > 2000) {
+      blob_bottom_->Reshape(10, 5, 20, 20);
+    } else if (max_rep > 200) {
+      blob_bottom_->Reshape(10, 5, 6, 6);
+    }
     Caffe::set_random_seed(1701, Caffe::GetDefaultDevice());
     // fill the values
     FillerParameter filler_param;
@@ -35,11 +43,11 @@ class ArgMaxLayerTest : public CPUDeviceTest<Dtype> {
   uint_tp top_k_;
 };
 
-TYPED_TEST_CASE(ArgMaxLayerTest, TestDtypes);
+TYPED_TEST_CASE(ArgMaxLayerTest, TestDtypesFloat);
 
 TYPED_TEST(ArgMaxLayerTest, TestSetup) {
   LayerParameter layer_param;
-  ArgMaxLayer<TypeParam> layer(layer_param);
+  ArgMaxLayer<TypeParam, TypeParam, TypeParam> layer(layer_param);
   layer.SetUp(this->blob_bottom_vec_, this->blob_top_vec_);
   EXPECT_EQ(this->blob_top_->shape(0), this->blob_bottom_->shape(0));
   EXPECT_EQ(this->blob_top_->channels(), 1);
@@ -49,7 +57,7 @@ TYPED_TEST(ArgMaxLayerTest, TestSetupMaxVal) {
   LayerParameter layer_param;
   ArgMaxParameter* argmax_param = layer_param.mutable_argmax_param();
   argmax_param->set_out_max_val(true);
-  ArgMaxLayer<TypeParam> layer(layer_param);
+  ArgMaxLayer<TypeParam, TypeParam, TypeParam> layer(layer_param);
   layer.SetUp(this->blob_bottom_vec_, this->blob_top_vec_);
   EXPECT_EQ(this->blob_top_->shape(0), this->blob_bottom_->shape(0));
   EXPECT_EQ(this->blob_top_->channels(), 2);
@@ -59,10 +67,10 @@ TYPED_TEST(ArgMaxLayerTest, TestSetupAxis) {
   LayerParameter layer_param;
   ArgMaxParameter* argmax_param = layer_param.mutable_argmax_param();
   argmax_param->set_axis(0);
-  ArgMaxLayer<TypeParam> layer(layer_param);
+  ArgMaxLayer<TypeParam, TypeParam, TypeParam> layer(layer_param);
   layer.SetUp(this->blob_bottom_vec_, this->blob_top_vec_);
   EXPECT_EQ(this->blob_top_->shape(0), argmax_param->top_k());
-  EXPECT_EQ(this->blob_top_->shape(1), this->blob_bottom_->shape(0));
+  EXPECT_EQ(this->blob_top_->shape(1), this->blob_bottom_->shape(1));
   EXPECT_EQ(this->blob_top_->shape(2), this->blob_bottom_->shape(2));
   EXPECT_EQ(this->blob_top_->shape(3), this->blob_bottom_->shape(3));
 }
@@ -71,7 +79,7 @@ TYPED_TEST(ArgMaxLayerTest, TestSetupAxisNegativeIndexing) {
   LayerParameter layer_param;
   ArgMaxParameter* argmax_param = layer_param.mutable_argmax_param();
   argmax_param->set_axis(-2);
-  ArgMaxLayer<TypeParam> layer(layer_param);
+  ArgMaxLayer<TypeParam, TypeParam, TypeParam> layer(layer_param);
   layer.SetUp(this->blob_bottom_vec_, this->blob_top_vec_);
   EXPECT_EQ(this->blob_top_->shape(0), this->blob_bottom_->shape(0));
   EXPECT_EQ(this->blob_top_->shape(1), this->blob_bottom_->shape(1));
@@ -84,7 +92,7 @@ TYPED_TEST(ArgMaxLayerTest, TestSetupAxisMaxVal) {
   ArgMaxParameter* argmax_param = layer_param.mutable_argmax_param();
   argmax_param->set_axis(2);
   argmax_param->set_out_max_val(true);
-  ArgMaxLayer<TypeParam> layer(layer_param);
+  ArgMaxLayer<TypeParam, TypeParam, TypeParam> layer(layer_param);
   layer.SetUp(this->blob_bottom_vec_, this->blob_top_vec_);
   EXPECT_EQ(this->blob_top_->shape(0), this->blob_bottom_->shape(0));
   EXPECT_EQ(this->blob_top_->shape(1), this->blob_bottom_->shape(1));
@@ -94,7 +102,7 @@ TYPED_TEST(ArgMaxLayerTest, TestSetupAxisMaxVal) {
 
 TYPED_TEST(ArgMaxLayerTest, TestCPU) {
   LayerParameter layer_param;
-  ArgMaxLayer<TypeParam> layer(layer_param);
+  ArgMaxLayer<TypeParam, TypeParam, TypeParam> layer(layer_param);
   layer.SetUp(this->blob_bottom_vec_, this->blob_top_vec_);
   layer.Forward(this->blob_bottom_vec_, this->blob_top_vec_);
   // Now, check values
@@ -119,7 +127,7 @@ TYPED_TEST(ArgMaxLayerTest, TestCPUMaxVal) {
   LayerParameter layer_param;
   ArgMaxParameter* argmax_param = layer_param.mutable_argmax_param();
   argmax_param->set_out_max_val(true);
-  ArgMaxLayer<TypeParam> layer(layer_param);
+  ArgMaxLayer<TypeParam, TypeParam, TypeParam> layer(layer_param);
   layer.SetUp(this->blob_bottom_vec_, this->blob_top_vec_);
   layer.Forward(this->blob_bottom_vec_, this->blob_top_vec_);
   // Now, check values
@@ -145,7 +153,7 @@ TYPED_TEST(ArgMaxLayerTest, TestCPUTopK) {
   LayerParameter layer_param;
   ArgMaxParameter* argmax_param = layer_param.mutable_argmax_param();
   argmax_param->set_top_k(this->top_k_);
-  ArgMaxLayer<TypeParam> layer(layer_param);
+  ArgMaxLayer<TypeParam, TypeParam, TypeParam> layer(layer_param);
   layer.SetUp(this->blob_bottom_vec_, this->blob_top_vec_);
   layer.Forward(this->blob_bottom_vec_, this->blob_top_vec_);
   // Now, check values
@@ -162,11 +170,13 @@ TYPED_TEST(ArgMaxLayerTest, TestCPUTopK) {
       max_val = bottom_data[i * dim + max_ind];
       int_tp count = 0;
       for (int_tp k = 0; k < dim; ++k) {
-        if (bottom_data[i * dim + k] > max_val) {
+        // Loosen = to >= here because of the possibility of multiple identical
+        // values
+        if (bottom_data[i * dim + k] >= max_val) {
           ++count;
         }
       }
-      EXPECT_EQ(j, count);
+      EXPECT_LE(j + 1, count);
     }
   }
 }
@@ -176,7 +186,7 @@ TYPED_TEST(ArgMaxLayerTest, TestCPUMaxValTopK) {
   ArgMaxParameter* argmax_param = layer_param.mutable_argmax_param();
   argmax_param->set_out_max_val(true);
   argmax_param->set_top_k(this->top_k_);
-  ArgMaxLayer<TypeParam> layer(layer_param);
+  ArgMaxLayer<TypeParam, TypeParam, TypeParam> layer(layer_param);
   layer.SetUp(this->blob_bottom_vec_, this->blob_top_vec_);
   layer.Forward(this->blob_bottom_vec_, this->blob_top_vec_);
   // Now, check values
@@ -194,11 +204,13 @@ TYPED_TEST(ArgMaxLayerTest, TestCPUMaxValTopK) {
       EXPECT_EQ(bottom_data[i * dim + max_ind], max_val);
       int_tp count = 0;
       for (int_tp k = 0; k < dim; ++k) {
-        if (bottom_data[i * dim + k] > max_val) {
+        // Loosen = to >= here because of the possibility of multiple identical
+        // values
+        if (bottom_data[i * dim + k] >= max_val) {
           ++count;
         }
       }
-      EXPECT_EQ(j, count);
+      EXPECT_LE(j + 1, count);
     }
   }
 }
@@ -207,13 +219,13 @@ TYPED_TEST(ArgMaxLayerTest, TestCPUAxis) {
   LayerParameter layer_param;
   ArgMaxParameter* argmax_param = layer_param.mutable_argmax_param();
   argmax_param->set_axis(0);
-  ArgMaxLayer<TypeParam> layer(layer_param);
+  ArgMaxLayer<TypeParam, TypeParam, TypeParam> layer(layer_param);
   layer.SetUp(this->blob_bottom_vec_, this->blob_top_vec_);
   layer.Forward(this->blob_bottom_vec_, this->blob_top_vec_);
   // Now, check values
   int_tp max_ind;
   TypeParam max_val;
-  std::vector<int_tp> shape = this->blob_bottom_->shape();
+  vector<int_tp> shape = this->blob_bottom_->shape();
   for (int_tp i = 0; i < shape[1]; ++i) {
     for (int_tp j = 0; j < shape[2]; ++j) {
       for (int_tp k = 0; k < shape[3]; ++k) {
@@ -234,13 +246,13 @@ TYPED_TEST(ArgMaxLayerTest, TestCPUAxisTopK) {
   ArgMaxParameter* argmax_param = layer_param.mutable_argmax_param();
   argmax_param->set_axis(2);
   argmax_param->set_top_k(this->top_k_);
-  ArgMaxLayer<TypeParam> layer(layer_param);
+  ArgMaxLayer<TypeParam, TypeParam, TypeParam> layer(layer_param);
   layer.SetUp(this->blob_bottom_vec_, this->blob_top_vec_);
   layer.Forward(this->blob_bottom_vec_, this->blob_top_vec_);
   // Now, check values
   int_tp max_ind;
   TypeParam max_val;
-  std::vector<int_tp> shape = this->blob_bottom_->shape();
+  vector<int_tp> shape = this->blob_bottom_->shape();
   for (int_tp i = 0; i < shape[0]; ++i) {
     for (int_tp j = 0; j < shape[1]; ++j) {
       for (int_tp k = 0; k < shape[3]; ++k) {
@@ -251,11 +263,13 @@ TYPED_TEST(ArgMaxLayerTest, TestCPUAxisTopK) {
           EXPECT_LE(max_ind, shape[2]);
           int_tp count = 0;
           for (int_tp l = 0; l < shape[2]; ++l) {
-            if (this->blob_bottom_->data_at(i, j, l, k) > max_val) {
+            // Loosen = to >= here because of the possibility of multiple
+            // identical values
+            if (this->blob_bottom_->data_at(i, j, l, k) >= max_val) {
               ++count;
             }
           }
-          EXPECT_EQ(m, count);
+          EXPECT_LE(m + 1, count);
         }
       }
     }
@@ -268,12 +282,12 @@ TYPED_TEST(ArgMaxLayerTest, TestCPUAxisMaxValTopK) {
   argmax_param->set_axis(-1);
   argmax_param->set_top_k(this->top_k_);
   argmax_param->set_out_max_val(true);
-  ArgMaxLayer<TypeParam> layer(layer_param);
+  ArgMaxLayer<TypeParam, TypeParam, TypeParam> layer(layer_param);
   layer.SetUp(this->blob_bottom_vec_, this->blob_top_vec_);
   layer.Forward(this->blob_bottom_vec_, this->blob_top_vec_);
   // Now, check values
   TypeParam max_val;
-  std::vector<int_tp> shape = this->blob_bottom_->shape();
+  vector<int_tp> shape = this->blob_bottom_->shape();
   for (int_tp i = 0; i < shape[0]; ++i) {
     for (int_tp j = 0; j < shape[1]; ++j) {
       for (int_tp k = 0; k < shape[2]; ++k) {
@@ -281,11 +295,13 @@ TYPED_TEST(ArgMaxLayerTest, TestCPUAxisMaxValTopK) {
           max_val = this->blob_top_->data_at(i, j, k, m);
           int_tp count = 0;
           for (int_tp l = 0; l < shape[3]; ++l) {
-            if (this->blob_bottom_->data_at(i, j, k, l) > max_val) {
+            // Loosen = to >= here because of the possibility of multiple
+            // identical values
+            if (this->blob_bottom_->data_at(i, j, k, l) >= max_val) {
               ++count;
             }
           }
-          EXPECT_EQ(m, count);
+          EXPECT_LE(m + 1, count);
         }
       }
     }

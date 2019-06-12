@@ -22,15 +22,15 @@ namespace caffe {
  * The latter, scale input may be omitted, in which case it's learned as
  * parameter of the layer (as is the bias, if it is included).
  */
-template <typename Dtype>
-class ScaleLayer: public Layer<Dtype> {
+template<typename Dtype, typename MItype, typename MOtype>
+class ScaleLayer: public Layer<Dtype, MItype, MOtype> {
  public:
   explicit ScaleLayer(const LayerParameter& param)
-      : Layer<Dtype>(param) {}
-  virtual void LayerSetUp(const vector<Blob<Dtype>*>& bottom,
-      const vector<Blob<Dtype>*>& top);
-  virtual void Reshape(const vector<Blob<Dtype>*>& bottom,
-      const vector<Blob<Dtype>*>& top);
+      : Layer<Dtype, MItype, MOtype>(param) {}
+  virtual void LayerSetUp(const vector<Blob<MItype>*>& bottom,
+      const vector<Blob<MOtype>*>& top);
+  virtual void Reshape(const vector<Blob<MItype>*>& bottom,
+      const vector<Blob<MOtype>*>& top);
 
   virtual inline const char* type() const { return "Scale"; }
   // Scale
@@ -48,26 +48,30 @@ class ScaleLayer: public Layer<Dtype> {
    * @param bottom input Blob vector (length 2)
    *   -# @f$ (d_0 \times ... \times
    *           d_i \times ... \times d_j \times ... \times d_n) @f$
-   *      the first factor @f$ x @f$
+   *      the first factor @f$ X @f$
    *   -# @f$ (d_i \times ... \times d_j) @f$
-   *      the second factor @f$ y @f$
+   *      the second factor @f$ Y @f$
    * @param top output Blob vector (length 1)
    *   -# @f$ (d_0 \times ... \times
    *           d_i \times ... \times d_j \times ... \times d_n) @f$
-   *      the product @f$ z = x y @f$ computed after "broadcasting" y.
-   *      Equivalent to tiling @f$ y @f$ to have the same shape as @f$ x @f$,
+   *      the product @f$ z = X Y @f$ computed after "broadcasting" Y.
+   *      Equivalent to tiling @f$ Y @f$ to have the same shape as @f$ X @f$,
    *      then computing the elementwise product.
    */
-  virtual void Forward_cpu(const vector<Blob<Dtype>*>& bottom,
-      const vector<Blob<Dtype>*>& top);
-  virtual void Forward_gpu(const vector<Blob<Dtype>*>& bottom,
-      const vector<Blob<Dtype>*>& top);
-  virtual void Backward_cpu(const vector<Blob<Dtype>*>& top,
-      const vector<bool>& propagate_down, const vector<Blob<Dtype>*>& bottom);
-  virtual void Backward_gpu(const vector<Blob<Dtype>*>& top,
-      const vector<bool>& propagate_down, const vector<Blob<Dtype>*>& bottom);
+  virtual void Forward_cpu(const vector<Blob<MItype>*>& bottom,
+      const vector<Blob<MOtype>*>& top);
+  virtual void Forward_gpu(const vector<Blob<MItype>*>& bottom,
+      const vector<Blob<MOtype>*>& top);
+  virtual void Backward_cpu(const vector<Blob<MOtype>*>& top,
+      const vector<bool>& propagate_down,
+      const vector<Blob<MItype>*>& bottom);
+  virtual void Backward_gpu(const vector<Blob<MOtype>*>& top,
+      const vector<bool>& propagate_down,
+      const vector<Blob<MItype>*>& bottom);
 
-  shared_ptr<Layer<Dtype> > bias_layer_;
+  void GenerateProgram();
+
+  shared_ptr<Layer<Dtype, Dtype, Dtype> > bias_layer_;
   vector<Blob<Dtype>*> bias_bottom_vec_;
   vector<bool> bias_propagate_down_;
   int_tp bias_param_id_;

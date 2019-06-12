@@ -4,46 +4,35 @@
 
 namespace caffe {
 
-template<typename Dtype>
-void ConvolutionLayer<Dtype>::compute_output_shape() {
-  const int_tp* kernel_shape_data = this->kernel_shape_.cpu_data();
-  const int_tp* stride_data = this->stride_.cpu_data();
-  const int_tp* pad_data = this->pad_.cpu_data();
-  const int_tp* dilation_data = this->dilation_.cpu_data();
-  this->output_shape_.clear();
-  for (int_tp i = 0; i < this->num_spatial_axes_; ++i) {
-    // i + 1 to skip channel axis
-    const int_tp input_dim = this->input_shape(i + 1);
-    const int_tp kernel_extent = dilation_data[i] * (kernel_shape_data[i] - 1)
-        + 1;
-    const int_tp output_dim = (input_dim + 2 * pad_data[i] - kernel_extent)
-        / stride_data[i] + 1;
-    this->output_shape_.push_back(output_dim);
-  }
-}
-
-template<typename Dtype>
-void ConvolutionLayer<Dtype>::Forward_cpu(const vector<Blob<Dtype>*>& bottom,
-                                          const vector<Blob<Dtype>*>& top) {
+template<typename Dtype, typename MItype, typename MOtype>
+void ConvolutionLayer<Dtype, MItype, MOtype>::Forward_cpu(
+                                          const vector<Blob<MItype>*>& bottom,
+                                          const vector<Blob<MOtype>*>& top) {
   const Dtype* weight = this->blobs_[0]->cpu_data();
   for (int_tp i = 0; i < bottom.size(); ++i) {
     const Dtype* bottom_data = bottom[i]->cpu_data();
     Dtype* top_data = top[i]->mutable_cpu_data();
     for (int_tp n = 0; n < this->num_; ++n) {
       this->forward_cpu_gemm(bottom_data + n * this->bottom_dim_, weight,
-                             top_data + n * this->top_dim_);
+                             top_data + n * this->top_dim_, false,
+                             &(this->bottom_quants_[i]->out_quantizer_values()),
+                             &(this->blobs_quants_[0]->out_quantizer_values()),
+                             &(this->top_quants_[i]->in_quantizer_values()));
       if (this->bias_term_) {
         const Dtype* bias = this->blobs_[1]->cpu_data();
-        this->forward_cpu_bias(top_data + n * this->top_dim_, bias);
+        this->forward_cpu_bias(top_data + n * this->top_dim_, bias,
+                             &(this->top_quants_[i]->in_quantizer_values()),
+                             &(this->blobs_quants_[1]->out_quantizer_values()));
       }
     }
   }
 }
 
-template<typename Dtype>
-void ConvolutionLayer<Dtype>::Backward_cpu(const vector<Blob<Dtype>*>& top,
-                                           const vector<bool>& propagate_down,
-                                           const vector<Blob<Dtype>*>& bottom) {
+template<typename Dtype, typename MItype, typename MOtype>
+void ConvolutionLayer<Dtype, MItype, MOtype>::Backward_cpu(
+                                         const vector<Blob<MOtype>*>& top,
+                                         const vector<bool>& propagate_down,
+                                         const vector<Blob<MItype>*>& bottom) {
   const Dtype* weight = this->blobs_[0]->cpu_data();
   Dtype* weight_diff = this->blobs_[0]->mutable_cpu_diff();
   for (int_tp i = 0; i < top.size(); ++i) {
@@ -78,6 +67,19 @@ void ConvolutionLayer<Dtype>::Backward_cpu(const vector<Blob<Dtype>*>& top,
 STUB_GPU(ConvolutionLayer);
 #endif
 
-INSTANTIATE_CLASS(ConvolutionLayer);
+INSTANTIATE_CLASS_3T_GUARDED(ConvolutionLayer,
+                             (half_fp), (half_fp), (half_fp));
+INSTANTIATE_CLASS_3T_GUARDED(ConvolutionLayer,
+                             (float), (float), (float));
+INSTANTIATE_CLASS_3T_GUARDED(ConvolutionLayer,
+                             (double), (double), (double));
+INSTANTIATE_CLASS_3T_GUARDED(ConvolutionLayer,
+                             (uint8_t), (uint8_t), (uint8_t));
+INSTANTIATE_CLASS_3T_GUARDED(ConvolutionLayer,
+                             (uint16_t), (uint16_t), (uint16_t));
+INSTANTIATE_CLASS_3T_GUARDED(ConvolutionLayer,
+                             (uint32_t), (uint32_t), (uint32_t));
+INSTANTIATE_CLASS_3T_GUARDED(ConvolutionLayer,
+                             (uint64_t), (uint64_t), (uint64_t));
 
 }  // namespace caffe

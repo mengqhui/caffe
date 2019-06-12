@@ -15,12 +15,12 @@ namespace caffe {
 template<typename Dtype>
 DataTransformer<Dtype>::DataTransformer(const TransformationParameter& param,
                                         Phase phase,
-                                        device *device_context)
+                                        Device *device_context)
     : param_(param),
       phase_(phase), device_(device_context) {
   // check if we want to use mean_file
   if (param_.has_mean_file()) {
-    CHECK_EQ(param_.mean_value_size(), 0)<<
+    CHECK_EQ(param_.mean_value_size(), 0) <<
     "Cannot specify mean_file and mean_value at the same time";
     const string& mean_file = param.mean_file();
     if (Caffe::root_solver()) {
@@ -132,7 +132,8 @@ void DataTransformer<Dtype>::Transform(const Datum& datum,
 
 template<typename Dtype>
 void DataTransformer<Dtype>::Transform(const Datum& datum,
-                                       Blob<Dtype>* transformed_blob) {
+                                       Blob<Dtype>* transformed_blob,
+                                       int_tp offset) {
   // If datum is encoded, decode and transform the cv::image.
   if (datum.encoded()) {
 #ifdef USE_OPENCV
@@ -146,7 +147,7 @@ void DataTransformer<Dtype>::Transform(const Datum& datum,
       cv_img = DecodeDatumToCVMatNative(datum);
     }
     // Transform the cv::image into blob.
-    return Transform(cv_img, transformed_blob);
+    return Transform(cv_img, transformed_blob, offset);
 #else
     LOG(FATAL) << "Encoded datum requires OpenCV; compile with USE_OPENCV.";
 #endif  // USE_OPENCV
@@ -180,12 +181,12 @@ void DataTransformer<Dtype>::Transform(const Datum& datum,
     CHECK_EQ(datum_width, width);
   }
 
-  Dtype* transformed_data = transformed_blob->mutable_cpu_data();
+  Dtype* transformed_data = transformed_blob->mutable_cpu_data() + offset;
   Transform(datum, transformed_data);
 }
 
 template<typename Dtype>
-void DataTransformer<Dtype>::Transform(const vector<Datum> & datum_vector,
+void DataTransformer<Dtype>::Transform(const vector<Datum> &datum_vector,
                                        Blob<Dtype>* transformed_blob) {
   const int_tp datum_num = datum_vector.size();
   const int_tp num = transformed_blob->num();
@@ -196,17 +197,19 @@ void DataTransformer<Dtype>::Transform(const vector<Datum> & datum_vector,
   CHECK_GT(datum_num, 0)<< "There is no datum to add";
   CHECK_LE(datum_num, num)<<
   "The size of datum_vector must be no greater than transformed_blob->num()";
-  Blob<Dtype> uni_blob(1, channels, height, width, device_);
+  Dtype* transformed_data = transformed_blob->mutable_cpu_data();
+#pragma omp parallel for
   for (int_tp item_id = 0; item_id < datum_num; ++item_id) {
+    Blob<Dtype> uni_blob(1, channels, height, width, device_);
     int_tp offset = transformed_blob->offset(item_id);
-    uni_blob.set_cpu_data(transformed_blob->mutable_cpu_data() + offset);
-    Transform(datum_vector[item_id], &uni_blob);
+    uni_blob.set_cpu_data(transformed_data + offset);
+    Transform(datum_vector[item_id], &uni_blob, 0);
   }
 }
 
 #ifdef USE_OPENCV
 template<typename Dtype>
-void DataTransformer<Dtype>::Transform(const vector<cv::Mat> & mat_vector,
+void DataTransformer<Dtype>::Transform(const vector<cv::Mat> &mat_vector,
                                        Blob<Dtype>* transformed_blob) {
   const int_tp mat_num = mat_vector.size();
   const int_tp num = transformed_blob->num();
@@ -217,17 +220,20 @@ void DataTransformer<Dtype>::Transform(const vector<cv::Mat> & mat_vector,
   CHECK_GT(mat_num, 0)<< "There is no MAT to add";
   CHECK_EQ(mat_num, num)<<
   "The size of mat_vector must be equals to transformed_blob->num()";
-  Blob<Dtype> uni_blob(1, channels, height, width, device_);
+  Dtype* transformed_data = transformed_blob->mutable_cpu_data();
+#pragma omp parallel for
   for (int_tp item_id = 0; item_id < mat_num; ++item_id) {
+    Blob<Dtype> uni_blob(1, channels, height, width, device_);
     int_tp offset = transformed_blob->offset(item_id);
-    uni_blob.set_cpu_data(transformed_blob->mutable_cpu_data() + offset);
-    Transform(mat_vector[item_id], &uni_blob);
+    uni_blob.set_cpu_data(transformed_data + offset);
+    Transform(mat_vector[item_id], &uni_blob, 0);
   }
 }
 
 template<typename Dtype>
 void DataTransformer<Dtype>::Transform(const cv::Mat& cv_img,
-                                       Blob<Dtype>* transformed_blob) {
+                                       Blob<Dtype>* transformed_blob,
+                                       int_tp offset) {
   const int_tp crop_size = param_.crop_size();
   const int_tp img_channels = cv_img.channels();
   const int_tp img_height = cv_img.rows;
@@ -299,7 +305,7 @@ void DataTransformer<Dtype>::Transform(const cv::Mat& cv_img,
 
   CHECK(cv_cropped_img.data);
 
-  Dtype* transformed_data = transformed_blob->mutable_cpu_data();
+  Dtype* transformed_data = transformed_blob->mutable_cpu_data() + offset;
   int_tp top_index;
   for (int_tp h = 0; h < height; ++h) {
     const uchar* ptr = cv_cropped_img.ptr<uchar>(h);
@@ -396,10 +402,11 @@ void DataTransformer<Dtype>::Transform(Blob<Dtype>* input_blob,
     CHECK_EQ(input_channels, data_mean_.channels());
     CHECK_EQ(input_height, data_mean_.height());
     CHECK_EQ(input_width, data_mean_.width());
+#pragma omp parallel for
     for (int_tp n = 0; n < input_num; ++n) {
       int_tp offset = input_blob->offset(n);
-      caffe_sub(data_mean_.count(), input_data + offset, data_mean_.cpu_data(),
-                input_data + offset);
+      caffe_sub<Dtype>(data_mean_.count(), input_data + offset,
+                       data_mean_.cpu_data(), input_data + offset);
     }
   }
 
@@ -408,13 +415,15 @@ void DataTransformer<Dtype>::Transform(Blob<Dtype>* input_blob,
         << "Specify either 1 mean_value or as many as channels: "
         << input_channels;
     if (mean_values_.size() == 1) {
-      caffe_add_scalar(input_blob->count(), -(mean_values_[0]), input_data);
+      caffe_add_scalar<Dtype>(input_blob->count(), -(mean_values_[0]),
+                              input_data);
     } else {
+#pragma omp parallel for
       for (int_tp n = 0; n < input_num; ++n) {
         for (int_tp c = 0; c < input_channels; ++c) {
           int_tp offset = input_blob->offset(n, c);
-          caffe_add_scalar(input_height * input_width, -(mean_values_[c]),
-                           input_data + offset);
+          caffe_add_scalar<Dtype>(input_height * input_width,
+                                  -(mean_values_[c]), input_data + offset);
         }
       }
     }
@@ -422,6 +431,7 @@ void DataTransformer<Dtype>::Transform(Blob<Dtype>* input_blob,
 
   Dtype* transformed_data = transformed_blob->mutable_cpu_data();
 
+#pragma omp parallel for
   for (int_tp n = 0; n < input_num; ++n) {
     int_tp top_index_n = n * channels;
     int_tp data_index_n = n * channels;
@@ -551,6 +561,6 @@ int_tp DataTransformer<Dtype>::Rand(int_tp n) {
   return ((*rng)() % n);
 }
 
-INSTANTIATE_CLASS(DataTransformer);
+INSTANTIATE_CLASS_1T_GUARDED(DataTransformer, PROTO_TYPES);
 
 }  // namespace caffe

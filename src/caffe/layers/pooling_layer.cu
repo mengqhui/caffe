@@ -5,1114 +5,1257 @@
 #include "caffe/layers/pooling_layer.hpp"
 #include "caffe/util/math_functions.hpp"
 
-#ifdef USE_GREENTEA
-#include "caffe/greentea/greentea.hpp"
-#include "caffe/greentea/greentea_math_functions.hpp"
-#endif  // USE_GREENTEA
-
 namespace caffe {
 
-#ifdef USE_CUDA
-template<typename Dtype>
-__global__ void MaxPoolForward(const int_tp nthreads,
-                               const Dtype* const bottom_data, const int_tp num,
-                               const int_tp channels, const int_tp height,
-                               const int_tp width, const int_tp pooled_height,
-                               const int_tp pooled_width, const int_tp kernel_h,
-                               const int_tp kernel_w, const int_tp stride_h,
-                               const int_tp stride_w, const int_tp pad_h,
-                               const int_tp pad_w, Dtype* const top_data,
-                               int_tp* mask,
-                               Dtype* top_mask) {
-  CUDA_KERNEL_LOOP(index, nthreads) {
-    const int_tp pw = index % pooled_width;
-    const int_tp ph = (index / pooled_width) % pooled_height;
-    const int_tp c = (index / pooled_width / pooled_height) % channels;
-    const int_tp n = index / pooled_width / pooled_height / channels;
-    int_tp hstart = ph * stride_h - pad_h;
-    int_tp wstart = pw * stride_w - pad_w;
-    const int_tp hend = min((int_tpc) (hstart + kernel_h), (int_tpc) height);
-    const int_tp wend = min((int_tpc) (wstart + kernel_w), (int_tpc) width);
-    hstart = max((int_tpc) (hstart), (int_tpc) (0));
-    wstart = max((int_tpc) (wstart), (int_tpc) (0));
-    Dtype maxval = -FLT_MAX;
-    int_tp maxidx = -1;
-    const Dtype* const bottom_slice = bottom_data
-        + (n * channels + c) * height * width;
-    for (int_tp h = hstart; h < hend; ++h) {
-      for (int_tp w = wstart; w < wend; ++w) {
-        if (bottom_slice[h * width + w] > maxval) {
-          maxidx = h * width + w;
-          maxval = bottom_slice[maxidx];
-        }
-      }
-    }
-    top_data[index] = maxval;
-    if (mask) {
-      mask[index] = maxidx;
-    } else {
-      top_mask[index] = maxidx;
-    }
-  }
-}
+template<typename Dtype, typename MItype, typename MOtype>
+void PoolingLayer<Dtype, MItype, MOtype>::GenerateProgram() {
+  this->device_program_ = this->device_->CreateProgram();
+  stringstream ss;
 
-template<typename Dtype>
-__global__ void AvePoolForward(const int_tp nthreads,
-                               const Dtype* const bottom_data, const int_tp num,
-                               const int_tp channels, const int_tp height,
-                               const int_tp width, const int_tp pooled_height,
-                               const int_tp pooled_width, const int_tp kernel_h,
-                               const int_tp kernel_w, const int_tp stride_h,
-                               const int_tp stride_w, const int_tp pad_h,
-                               const int_tp pad_w, Dtype* const top_data) {
-  CUDA_KERNEL_LOOP(index, nthreads) {
-    const int_tp pw = index % pooled_width;
-    const int_tp ph = (index / pooled_width) % pooled_height;
-    const int_tp c = (index / pooled_width / pooled_height) % channels;
-    const int_tp n = index / pooled_width / pooled_height / channels;
-    int_tp hstart = ph * stride_h - pad_h;
-    int_tp wstart = pw * stride_w - pad_w;
-    int_tp hend = min((int_tpc) (hstart + kernel_h),
-                      (int_tpc) (height + pad_h));
-    int_tp wend = min((int_tpc) (wstart + kernel_w),
-                      (int_tpc) (width + pad_w));
-    const int_tp pool_size = (hend - hstart) * (wend - wstart);
-    hstart = max((int_tpc) (hstart), (int_tpc) (0));
-    wstart = max((int_tpc) (wstart), (int_tpc) (0));
-    hend = min((int_tpc) (hend), (int_tpc) (height));
-    wend = min((int_tpc) (wend), (int_tpc) (width));
-    Dtype aveval = 0;
-    const Dtype* const bottom_slice = bottom_data
-        + (n * channels + c) * height * width;
-    for (int_tp h = hstart; h < hend; ++h) {
-      for (int_tp w = wstart; w < wend; ++w) {
-        aveval += bottom_slice[h * width + w];
-      }
-    }
-    top_data[index] = aveval / pool_size;
-  }
-}
+  ss << this->device_program_->setup();
+  ss << this->device_program_->template define_type<Dtype>("Dtype");
+  ss << this->device_program_->template define_type<MItype>("MItype");
+  ss << this->device_program_->template define_type<MOtype>("MOtype");
 
-template<typename Dtype>
-__global__ void StoPoolForwardTrain(const int_tp nthreads,
-                                    const Dtype* const bottom_data,
-                                    const int_tp num, const int_tp channels,
-                                    const int_tp height, const int_tp width,
-                                    const int_tp pooled_height,
-                                    const int_tp pooled_width,
-                                    const int_tp kernel_h,
-                                    const int_tp kernel_w,
-                                    const int_tp stride_h,
-                                    const int_tp stride_w,
-                                    Dtype* const rand_idx,
-                                    Dtype* const top_data) {
-  CUDA_KERNEL_LOOP(index, nthreads) {
-    const int_tp pw = index % pooled_width;
-    const int_tp ph = (index / pooled_width) % pooled_height;
-    const int_tp c = (index / pooled_width / pooled_height) % channels;
-    const int_tp n = index / pooled_width / pooled_height / channels;
-    const int_tp hstart = ph * stride_h;
-    const int_tp hend = min((int_tpc) (hstart + kernel_h), (int_tpc) height);
-    const int_tp wstart = pw * stride_w;
-    const int_tp wend = min((int_tpc) (wstart + kernel_w), (int_tpc) width);
-    Dtype cumsum = 0.;
-    const Dtype* const bottom_slice = bottom_data
-        + (n * channels + c) * height * width;
-    // First pass: get sum
-    for (int_tp h = hstart; h < hend; ++h) {
-      for (int_tp w = wstart; w < wend; ++w) {
-        cumsum += bottom_slice[h * width + w];
-      }
-    }
-    const float thres = rand_idx[index] * cumsum;
-    // Second pass: get value, and set index.
-    cumsum = 0;
-    for (int_tp h = hstart; h < hend; ++h) {
-      for (int_tp w = wstart; w < wend; ++w) {
-        cumsum += bottom_slice[h * width + w];
-        if (cumsum >= thres) {
-          rand_idx[index] = ((n * channels + c) * height + h) * width + w;
-          top_data[index] = bottom_slice[h * width + w];
-          return;
-        }
-      }
-    }
+#ifdef USE_HALF
+  if (std::is_same<MItype, half_fp>::value) {
+    ss << "#define DTYPE_MAX HALF_MAX" << std::endl;
+    ss << "#define DTYPE_MIN HALF_MIN" << std::endl;
+  } else if (std::is_same<MItype, float>::value
+        || std::is_same<MItype, double>::value) {
+#endif
+    ss << "#define DTYPE_MAX FLT_MAX" << std::endl;
+    ss << "#define DTYPE_MIN FLT_MIN" << std::endl;
+#ifdef USE_HALF
+  } else {
+    ss << "#define DTYPE_MAX " << 0 << std::endl;
+    ss << "#define DTYPE_MIN " << 0 << std::endl;
   }
-}
+#endif
 
-template<typename Dtype>
-__global__ void StoPoolForwardTest(const int_tp nthreads,
-                                   const Dtype* const bottom_data,
-                                   const int_tp num, const int_tp channels,
-                                   const int_tp height, const int_tp width,
-                                   const int_tp pooled_height,
-                                   const int_tp pooled_width,
-                                   const int_tp kernel_h, const int_tp kernel_w,
-                                   const int_tp stride_h, const int_tp stride_w,
-                                   Dtype* const top_data) {
-  CUDA_KERNEL_LOOP(index, nthreads) {
-    const int_tp pw = index % pooled_width;
-    const int_tp ph = (index / pooled_width) % pooled_height;
-    const int_tp c = (index / pooled_width / pooled_height) % channels;
-    const int_tp n = index / pooled_width / pooled_height / channels;
-    const int_tp hstart = ph * stride_h;
-    const int_tp hend = min((int_tpc) (hstart + kernel_h), (int_tpc) height);
-    const int_tp wstart = pw * stride_w;
-    const int_tp wend = min((int_tpc) (wstart + kernel_w), (int_tpc) width);
-    // We set cumsum to be 0 to avoid divide-by-zero problems
-    Dtype cumsum = FLT_MIN;
-    Dtype cumvalues = 0.;
-    const Dtype* const bottom_slice = bottom_data
-        + (n * channels + c) * height * width;
-    // First pass: get sum
-    for (int_tp h = hstart; h < hend; ++h) {
-      for (int_tp w = wstart; w < wend; ++w) {
-        cumsum += bottom_slice[h * width + w];
-        cumvalues += bottom_slice[h * width + w] * bottom_slice[h * width + w];
-      }
-    }
-    top_data[index] = cumvalues / cumsum;
+  {
+    KernelArgs args;
+    args.push_back(this->device_program_->template create_kernel_arg<uint_tp>(
+                      "nthreads", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<Dtype>(
+                      "bottom_data", KERNEL_ARG_CONST | KERNEL_ARG_GLOBAL_MEM));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "num", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "channels", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "height", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "width", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "pooled_height", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "pooled_width", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "kernel_h", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "kernel_w", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "ext_kernel_h", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "ext_kernel_w", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "stride_h", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "stride_w", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "dilation_h", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "dilation_w", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "pad_h", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "pad_w", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<Dtype>(
+                      "top_data", KERNEL_ARG_GLOBAL_MEM));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "mask", KERNEL_ARG_GLOBAL_MEM));
+    args.push_back(this->device_program_->template create_kernel_arg<Dtype>(
+                      "top_mask", KERNEL_ARG_GLOBAL_MEM));
+    ss << this->device_program_->function("MaxPoolForwardSK", args);
+    ss << this->device_program_->kernel_loop("uint_tp", "index", "nthreads");
+    ss << "int_tp pw = index % pooled_width;" << std::endl;
+    ss << "int_tp ph = (index / pooled_width) % pooled_height;" << std::endl;
+    ss << "int_tp c = (index / pooled_width / pooled_height) % channels;"
+       << std::endl;
+    ss << "int_tp n = index / pooled_width / pooled_height / channels;"
+       << std::endl;
+    ss << "int_tp hstart = ph * stride_h - pad_h;" << std::endl;
+    ss << "int_tp wstart = pw * stride_w - pad_w;" << std::endl;
+    ss << "int_tp hend = min((int_tpc) (hstart + ext_kernel_h),"
+       << " (int_tpc) height);" << std::endl;
+    ss << "int_tp wend = min((int_tpc) (wstart + ext_kernel_w),"
+       << " (int_tpc) width);" << std::endl;
+    ss << "while (hstart < 0) {" << std::endl;
+    ss << "hstart += dilation_h;" << std::endl;
+    ss << "}" << std::endl;
+    ss << "while (wstart < 0) {" << std::endl;
+    ss << "wstart += dilation_w;" << std::endl;
+    ss << "}" << std::endl;
+    ss << "Dtype maxval = -DTYPE_MAX;" << std::endl;
+    ss << "int_tp maxidx = -1;" << std::endl;
+    ss << "bottom_data += (n * channels + c) * height * width;" << std::endl;
+    ss << "for (int_tp h = hstart; h < hend; h += dilation_h) {" << std::endl;
+    ss << "for (int_tp w = wstart; w < wend; w += dilation_w) {" << std::endl;
+    ss << "if (bottom_data[h * width + w] > maxval) {" << std::endl;
+    ss << "maxidx = h * width + w;" << std::endl;
+    ss << "maxval = bottom_data[maxidx];" << std::endl;
+    ss << "}" << std::endl;
+    ss << "}" << std::endl;
+    ss << "}" << std::endl;
+    ss << "top_data[index] = maxval;" << std::endl;
+    ss << "if (mask) {" << std::endl;
+    ss << "mask[index] = maxidx;" << std::endl;
+    ss << "} else {" << std::endl;
+    ss << "top_mask[index] = maxidx;" << std::endl;
+    ss << "}" << std::endl;
+    ss << "}" << std::endl;
+    ss << "}" << std::endl;
   }
-}
 
-template<typename Dtype>
-__global__ void MaxPoolBackward(const int_tp nthreads,
-                                const Dtype* const top_diff,
-                                const int_tp* const mask,
-                                const Dtype* const top_mask, const int_tp num,
-                                const int_tp channels, const int_tp height,
-                                const int_tp width, const int_tp pooled_height,
-                                const int_tp pooled_width,
-                                const int_tp kernel_h, const int_tp kernel_w,
-                                const int_tp stride_h, const int_tp stride_w,
-                                const int_tp pad_h, const int_tp pad_w,
-                                Dtype* const bottom_diff) {
-  CUDA_KERNEL_LOOP(index, nthreads) {
-    // find out the local index
-    // find out the local offset
-    const int_tp w = index % width;
-    const int_tp h = (index / width) % height;
-    const int_tp c = (index / width / height) % channels;
-    const int_tp n = index / width / height / channels;
-    const int_tp phstart =
-        (h + pad_h < kernel_h) ? 0 : (h + pad_h - kernel_h) / stride_h + 1;
-    const int_tp phend = min((int_tpc) ((h + pad_h) / stride_h + 1L),
-                             (int_tpc) pooled_height);
-    const int_tp pwstart =
-        (w + pad_w < kernel_w) ? 0 : (w + pad_w - kernel_w) / stride_w + 1;
-    const int_tp pwend = min((int_tpc) ((w + pad_w) / stride_w + 1L),
-                             (int_tpc) pooled_width);
-    Dtype gradient = 0;
-    const int_tp offset = (n * channels + c) * pooled_height * pooled_width;
-    const Dtype* const top_diff_slice = top_diff + offset;
-    if (mask) {
-      const int_tp* const mask_slice = mask + offset;
-      for (int_tp ph = phstart; ph < phend; ++ph) {
-        for (int_tp pw = pwstart; pw < pwend; ++pw) {
-          if (mask_slice[ph * pooled_width + pw] == h * width + w) {
-            gradient += top_diff_slice[ph * pooled_width + pw];
-          }
-        }
-      }
-    } else {
-      const Dtype* const top_mask_slice = top_mask + offset;
-      for (int_tp ph = phstart; ph < phend; ++ph) {
-        for (int_tp pw = pwstart; pw < pwend; ++pw) {
-          if (top_mask_slice[ph * pooled_width + pw] == h * width + w) {
-            gradient += top_diff_slice[ph * pooled_width + pw];
-          }
-        }
-      }
-    }
-    bottom_diff[index] = gradient;
-  }
-}
-
-template<typename Dtype>
-__global__ void AvePoolBackward(const int_tp nthreads,
-                                const Dtype* const top_diff, const int_tp num,
-                                const int_tp channels, const int_tp height,
-                                const int_tp width, const int_tp pooled_height,
-                                const int_tp pooled_width,
-                                const int_tp kernel_h, const int_tp kernel_w,
-                                const int_tp stride_h, const int_tp stride_w,
-                                const int_tp pad_h, const int_tp pad_w,
-                                Dtype* const bottom_diff) {
-  CUDA_KERNEL_LOOP(index, nthreads) {
-    // find out the local index
-    // find out the local offset
-    const int_tp w = index % width + pad_w;
-    const int_tp h = (index / width) % height + pad_h;
-    const int_tp c = (index / width / height) % channels;
-    const int_tp n = index / width / height / channels;
-    const int_tp phstart = (h < kernel_h) ? 0 : (h - kernel_h) / stride_h + 1;
-    const int_tp phend = min((int_tpc) (h / stride_h + 1),
-                             (int_tpc) (pooled_height));
-    const int_tp pwstart = (w < kernel_w) ? 0 : (w - kernel_w) / stride_w + 1;
-    const int_tp pwend = min((int_tpc) (w / stride_w + 1),
-                             (int_tpc) (pooled_width));
-    Dtype gradient = 0;
-    const Dtype* const top_diff_slice = top_diff
-        + (n * channels + c) * pooled_height * pooled_width;
-    for (int_tp ph = phstart; ph < phend; ++ph) {
-      for (int_tp pw = pwstart; pw < pwend; ++pw) {
-        // figure out the pooling size
-        int_tp hstart = ph * stride_h - pad_h;
-        int_tp wstart = pw * stride_w - pad_w;
-        int_tp hend = min((int_tpc) (hstart + kernel_h),
-                          (int_tpc) (height + pad_h));
-        int_tp wend = min((int_tpc) (wstart + kernel_w),
-                          (int_tpc) (width + pad_w));
-        int_tp pool_size = (hend - hstart) * (wend - wstart);
-        gradient += top_diff_slice[ph * pooled_width + pw] / pool_size;
-      }
-    }
-    bottom_diff[index] = gradient;
-  }
-}
-
-template<typename Dtype>
-__global__ void AvePoolBackward(const int_tp nthreads,
-                                const Dtype* const top_diff, const int_tp num,
-                                const int_tp channels, const int_tp height,
-                                const int_tp width, const int_tp pooled_height,
-                                const int_tp pooled_width,
-                                const int_tp kernel_h, const int_tp kernel_w,
-                                const int_tp ext_kernel_h,
-                                const int_tp ext_kernel_w,
-                                const int_tp stride_h,
-                                const int_tp stride_w,
-                                const int_tp dilation_h,
-                                const int_tp dilation_w,
-                                const int_tp pad_h, const int_tp pad_w,
-                                Dtype* const bottom_diff) {
-  CUDA_KERNEL_LOOP(index, nthreads) {
-    // find out the local index
-    // find out the local offset
-    const int_tp w = index % width;
-    const int_tp h = (index / width) % height;
-    const int_tp c = (index / width / height) % channels;
-    const int_tp n = index / width / height / channels;
-    int_tp phstart =
-        (h + pad_h < ext_kernel_h) ? 0 :
-            (h + pad_h - ext_kernel_h) / stride_h + 1;
-    int_tp phend = min(((h + pad_h) / stride_h + 1),
-                       pooled_height);
-    int_tp pwstart =
-        (w + pad_w < ext_kernel_w) ? 0 :
-            (w + pad_w - ext_kernel_w) / stride_w + 1;
-    int_tp pwend = min(((w + pad_w) / stride_w + 1),
-                       pooled_width);
-    Dtype gradient = 0.0;
-    const Dtype* const top_diff_slice = top_diff
-        + (n * channels + c) * pooled_height * pooled_width;
-    for (int_tp ph = phstart; ph < phend; ++ph) {
-      for (int_tp pw = pwstart; pw < pwend; ++pw) {
-        // figure out the pooling size
-        int_tp hstart = ph * stride_h - pad_h;
-        int_tp wstart = pw * stride_w - pad_w;
-        int_tp hend = min(hstart + ext_kernel_h, height + pad_h);
-        int_tp wend = min(wstart + ext_kernel_w, width + pad_w);
-        int_tp pool_size =
-            ((hend - hstart - 1) / dilation_h + 1) *
-            ((wend - wstart - 1) / dilation_w + 1);
-        if (h >= hstart && h < hend &&
-            (h - hstart) % dilation_h == 0 &&
-            w >= wstart && w < wend &&
-            (w - wstart) % dilation_w == 0) {
-          gradient += top_diff_slice[ph * pooled_width + pw] / pool_size;
-        }
-      }
-    }
-    bottom_diff[index] = gradient;
-  }
-}
-
-template<typename Dtype>
-__global__ void StoPoolBackward(const int_tp nthreads,
-                                const Dtype* const rand_idx,
-                                const Dtype* const top_diff, const int_tp num,
-                                const int_tp channels, const int_tp height,
-                                const int_tp width, const int_tp pooled_height,
-                                const int_tp pooled_width,
-                                const int_tp kernel_h, const int_tp kernel_w,
-                                const int_tp stride_h, const int_tp stride_w,
-                                Dtype* const bottom_diff) {
-  CUDA_KERNEL_LOOP(index, nthreads) {
-    // find out the local index
-    // find out the local offset
-    const int_tp w = index % width;
-    const int_tp h = (index / width) % height;
-    const int_tp c = (index / width / height) % channels;
-    const int_tp n = index / width / height / channels;
-    const int_tp phstart = (h < kernel_h) ? 0 : (h - kernel_h) / stride_h + 1;
-    const int_tp phend = min((int_tpc) (h / stride_h + 1),
-                             (int_tpc) pooled_height);
-    const int_tp pwstart = (w < kernel_w) ? 0 : (w - kernel_w) / stride_w + 1;
-    const int_tp pwend = min((int_tpc) (w / stride_w + 1),
-                             (int_tpc) pooled_width);
-    Dtype gradient = 0;
-    const Dtype* const rand_idx_slice = rand_idx
-        + (n * channels + c) * pooled_height * pooled_width;
-    const Dtype* const top_diff_slice = top_diff
-        + (n * channels + c) * pooled_height * pooled_width;
-    for (int_tp ph = phstart; ph < phend; ++ph) {
-      for (int_tp pw = pwstart; pw < pwend; ++pw) {
-        gradient += top_diff_slice[ph * pooled_width + pw]
-            * (index
-                == static_cast<int_tp>(rand_idx_slice[ph * pooled_width + pw]));
-      }
-    }
-    bottom_diff[index] = gradient;
-  }
-}
-
-template<typename Dtype>
-__global__ void MaxPoolForward(const int_tp nthreads, const Dtype* bottom_data,
-                               const int_tp num, const int_tp channels,
-                               const int_tp height, const int_tp width,
-                               const int_tp pooled_height,
-                               const int_tp pooled_width, const int_tp kernel_h,
-                               const int_tp kernel_w, const int_tp ext_kernel_h,
-                               const int_tp ext_kernel_w, const int_tp stride_h,
-                               const int_tp stride_w, const int_tp dilation_h,
-                               const int_tp dilation_w, const int_tp pad_h,
-                               const int_tp pad_w, Dtype* top_data,
-                               int_tp* mask, Dtype* top_mask) {
-  CUDA_KERNEL_LOOP(index, nthreads) {
-    int_tp pw = index % pooled_width;
-    int_tp ph = (index / pooled_width) % pooled_height;
-    int_tp c = (index / pooled_width / pooled_height) % channels;
-    int_tp n = index / pooled_width / pooled_height / channels;
-    int_tp hstart = ph * stride_h - pad_h;
-    int_tp wstart = pw * stride_w - pad_w;
-    int_tp hend = min((int_tpc) (hstart + ext_kernel_h), (int_tpc) height);
-    int_tp wend = min((int_tpc) (wstart + ext_kernel_w), (int_tpc) width);
-    while (hstart < 0) {
-      hstart += dilation_h;
-    }
-    while (wstart < 0) {
-      wstart += dilation_w;
-    }
-    Dtype maxval = -FLT_MAX;
-    int_tp maxidx = -1;
-    bottom_data += (n * channels + c) * height * width;
-    for (int_tp h = hstart; h < hend; h += dilation_h) {
-      for (int_tp w = wstart; w < wend; w += dilation_w) {
-        if (bottom_data[h * width + w] > maxval) {
-          maxidx = h * width + w;
-          maxval = bottom_data[maxidx];
-        }
-      }
-    }
-    top_data[index] = maxval;
-    if (mask) {
-      mask[index] = maxidx;
-    } else {
-      top_mask[index] = maxidx;
-    }
-  }
-}
-
-template<typename Dtype>
-__global__ void AvePoolForward(const int_tp nthreads, const Dtype* bottom_data,
-                               const int_tp num, const int_tp channels,
-                               const int_tp height, const int_tp width,
-                               const int_tp pooled_height,
-                               const int_tp pooled_width, const int_tp kernel_h,
-                               const int_tp kernel_w, const int_tp ext_kernel_h,
-                               const int_tp ext_kernel_w, const int_tp stride_h,
-                               const int_tp stride_w, const int_tp dilation_h,
-                               const int_tp dilation_w, const int_tp pad_h,
-                               const int_tp pad_w, Dtype* top_data) {
-  CUDA_KERNEL_LOOP(index, nthreads) {
-    int_tp pool_size = 0;
-    int_tp pw = index % pooled_width;
-    int_tp ph = (index / pooled_width) % pooled_height;
-    int_tp c = (index / pooled_width / pooled_height) % channels;
-    int_tp n = index / pooled_width / pooled_height / channels;
-    int_tp hstart = ph * stride_h - pad_h;
-    int_tp wstart = pw * stride_w - pad_w;
-    int_tp hend = hstart + ext_kernel_h;
-    int_tp wend = wstart + ext_kernel_w;
+  {
+    KernelArgs args;
+    args.push_back(this->device_program_->template create_kernel_arg<uint_tp>(
+                      "nthreads", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<Dtype>(
+                      "bottom_data", KERNEL_ARG_CONST | KERNEL_ARG_GLOBAL_MEM));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "num", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "channels", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "height", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "width", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "pooled_height", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "pooled_width", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "kernel_h", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "kernel_w", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "ext_kernel_h", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "ext_kernel_w", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "stride_h", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "stride_w", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "dilation_h", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "dilation_w", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "pad_h", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "pad_w", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<Dtype>(
+                      "top_data", KERNEL_ARG_GLOBAL_MEM));
+    ss << this->device_program_->function("AvePoolForwardSK", args);
+    ss << this->device_program_->kernel_loop("uint_tp", "index", "nthreads");
+    ss << "int_tp pool_size = 0;" << std::endl;
+    ss << "int_tp pw = index % pooled_width;" << std::endl;
+    ss << "int_tp ph = (index / pooled_width) % pooled_height;" << std::endl;
+    ss << "int_tp c = (index / pooled_width / pooled_height) % channels;"
+       << std::endl;
+    ss << "int_tp n = index / pooled_width / pooled_height / channels;"
+       << std::endl;
+    ss << "int_tp hstart = ph * stride_h - pad_h;" << std::endl;
+    ss << "int_tp wstart = pw * stride_w - pad_w;" << std::endl;
+    ss << "int_tp hend = hstart + ext_kernel_h;" << std::endl;
+    ss << "int_tp wend = wstart + ext_kernel_w;" << std::endl;
     // Overspill over the image + pad does
     // not contribute to pool size
-    while (hend > height + pad_h) {
-      hend -= dilation_h;
-    }
-    while (wend > width + pad_w) {
-      wend -= dilation_w;
-    }
-    Dtype aveval = 0;
-    bottom_data += (n * channels + c) * height * width;
-    for (int_tp h = hstart; h < hend; h += dilation_h) {
-      for (int_tp w = wstart; w < wend; w += dilation_w) {
-        if (h >= 0 && h < height && w >= 0 && w < width) {
-          aveval += bottom_data[h * width + w];
-        }
-        ++pool_size;
-      }
-    }
-    top_data[index] = aveval / pool_size;
+    ss << "while (hend > height + pad_h) {" << std::endl;
+    ss << "hend -= dilation_h;" << std::endl;
+    ss << "}" << std::endl;
+    ss << "while (wend > width + pad_w) {" << std::endl;
+    ss << "wend -= dilation_w;" << std::endl;
+    ss << "}" << std::endl;
+    ss << "Dtype aveval = 0;" << std::endl;
+    ss << "bottom_data += (n * channels + c) * height * width;" << std::endl;
+    ss << "for (int_tp h = hstart; h < hend; h += dilation_h) {" << std::endl;
+    ss << "for (int_tp w = wstart; w < wend; w += dilation_w) {" << std::endl;
+    ss << "if (h >= 0 && h < height && w >= 0 && w < width) {" << std::endl;
+    ss << "aveval += bottom_data[h * width + w];" << std::endl;
+    ss << "}" << std::endl;
+    ss << "++pool_size;" << std::endl;
+    ss << "}" << std::endl;
+    ss << "}" << std::endl;
+    ss << "top_data[index] = aveval / ((Dtype)pool_size);" << std::endl;
+    ss << "}" << std::endl;
+    ss << "}" << std::endl;
   }
-}
 
-template<typename Dtype>
-__global__ void StoPoolForwardTrain(const int_tp nthreads,
-                                    const Dtype* bottom_data, const int_tp num,
-                                    const int_tp channels, const int_tp height,
-                                    const int_tp width,
-                                    const int_tp pooled_height,
-                                    const int_tp pooled_width,
-                                    const int_tp kernel_h,
-                                    const int_tp kernel_w,
-                                    const int_tp ext_kernel_h,
-                                    const int_tp ext_kernel_w,
-                                    const int_tp stride_h,
-                                    const int_tp stride_w,
-                                    const int_tp dilation_h,
-                                    const int_tp dilation_w, Dtype* rand_idx,
-                                    Dtype* top_data) {
-  CUDA_KERNEL_LOOP(index, nthreads) {
-    int_tp pw = index % pooled_width;
-    int_tp ph = (index / pooled_width) % pooled_height;
-    int_tp c = (index / pooled_width / pooled_height) % channels;
-    int_tp n = index / pooled_width / pooled_height / channels;
-    int_tp hstart = ph * stride_h;
-    int_tp hend = min((int_tpc) (hstart + ext_kernel_h), (int_tpc) height);
-    int_tp wstart = pw * stride_w;
-    int_tp wend = min((int_tpc) (wstart + ext_kernel_w), (int_tpc) width);
-    Dtype cumsum = 0.;
-    bottom_data += (n * channels + c) * height * width;
+  {
+    KernelArgs args;
+    args.push_back(this->device_program_->template create_kernel_arg<uint_tp>(
+                      "nthreads", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<Dtype>(
+                      "bottom_data", KERNEL_ARG_CONST | KERNEL_ARG_GLOBAL_MEM));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "num", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "channels", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "height", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "width", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "pooled_height", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "pooled_width", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "kernel_h", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "kernel_w", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "ext_kernel_h", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "ext_kernel_w", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "stride_h", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "stride_w", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "dilation_h", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "dilation_w", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<Dtype>(
+                      "rand_idx", KERNEL_ARG_GLOBAL_MEM));
+    args.push_back(this->device_program_->template create_kernel_arg<Dtype>(
+                      "top_data", KERNEL_ARG_GLOBAL_MEM));
+    ss << this->device_program_->function("StoPoolForwardTrainSK", args);
+    ss << this->device_program_->kernel_loop("uint_tp", "index", "nthreads");
+    ss << "int_tp pw = index % pooled_width;" << std::endl;
+    ss << "int_tp ph = (index / pooled_width) % pooled_height;" << std::endl;
+    ss << "int_tp c = (index / pooled_width / pooled_height) % channels;"
+       << std::endl;
+    ss << "int_tp n = index / pooled_width / pooled_height / channels;"
+       << std::endl;
+    ss << "int_tp hstart = ph * stride_h;" << std::endl;
+    ss << "int_tp hend = min((int_tpc) (hstart + ext_kernel_h),"
+        " (int_tpc) height);" << std::endl;
+    ss << "int_tp wstart = pw * stride_w;" << std::endl;
+    ss << "int_tp wend = min((int_tpc) (wstart + ext_kernel_w),"
+       << " (int_tpc) width);" << std::endl;
+    ss << "Dtype cumsum = 0.;" << std::endl;
+    ss << "bottom_data += (n * channels + c) * height * width;" << std::endl;
     // First pass: get sum
-    for (int_tp h = hstart; h < hend; h += dilation_h) {
-      for (int_tp w = wstart; w < wend; w += dilation_w) {
-        cumsum += bottom_data[h * width + w];
-      }
-    }
-    float thres = rand_idx[index] * cumsum;
+    ss << "for (int_tp h = hstart; h < hend; h += dilation_h) {" << std::endl;
+    ss << "for (int_tp w = wstart; w < wend; w += dilation_w) {" << std::endl;
+    ss << "cumsum += bottom_data[h * width + w];" << std::endl;
+    ss << "}" << std::endl;
+    ss << "}" << std::endl;
+    ss << "Dtype thres = rand_idx[index] * cumsum;" << std::endl;
     // Second pass: get value, and set index.
-    cumsum = 0;
-    for (int_tp h = hstart; h < hend; h += dilation_h) {
-      for (int_tp w = wstart; w < wend; w += dilation_w) {
-        cumsum += bottom_data[h * width + w];
-        if (cumsum >= thres) {
-          rand_idx[index] = ((n * channels + c) * height + h) * width + w;
-          top_data[index] = bottom_data[h * width + w];
-          return;
-        }
-      }
-    }
+    ss << "cumsum = 0;" << std::endl;
+    ss << "for (int_tp h = hstart; h < hend; h += dilation_h) {" << std::endl;
+    ss << "for (int_tp w = wstart; w < wend; w += dilation_w) {" << std::endl;
+    ss << "cumsum += bottom_data[h * width + w];" << std::endl;
+    ss << "if (cumsum >= thres) {" << std::endl;
+    ss << "rand_idx[index] = ((n * channels + c) * height + h) * width + w;"
+       << std::endl;
+    ss << "top_data[index] = bottom_data[h * width + w];" << std::endl;
+    ss << "return;" << std::endl;
+    ss << "}" << std::endl;
+    ss << "}" << std::endl;
+    ss << "}" << std::endl;
+    ss << "}" << std::endl;
+    ss << "}" << std::endl;
   }
-}
 
-template<typename Dtype>
-__global__ void StoPoolForwardTest(const int_tp nthreads,
-                                   const Dtype* bottom_data, const int_tp num,
-                                   const int_tp channels, const int_tp height,
-                                   const int_tp width,
-                                   const int_tp pooled_height,
-                                   const int_tp pooled_width,
-                                   const int_tp kernel_h, const int_tp kernel_w,
-                                   const int_tp ext_kernel_h,
-                                   const int_tp ext_kernel_w,
-                                   const int_tp stride_h, const int_tp stride_w,
-                                   const int_tp dilation_h,
-                                   const int_tp dilation_w, Dtype* top_data) {
-  CUDA_KERNEL_LOOP(index, nthreads) {
-    int_tp pw = index % pooled_width;
-    int_tp ph = (index / pooled_width) % pooled_height;
-    int_tp c = (index / pooled_width / pooled_height) % channels;
-    int_tp n = index / pooled_width / pooled_height / channels;
-    int_tp hstart = ph * stride_h;
-    int_tp hend = min((int_tpc) (hstart + ext_kernel_h), (int_tpc) height);
-    int_tp wstart = pw * stride_w;
-    int_tp wend = min((int_tpc) (wstart + ext_kernel_w), (int_tpc) width);
+  {
+    KernelArgs args;
+    args.push_back(this->device_program_->template create_kernel_arg<uint_tp>(
+                      "nthreads", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<Dtype>(
+                      "bottom_data", KERNEL_ARG_CONST | KERNEL_ARG_GLOBAL_MEM));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "num", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "channels", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "height", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "width", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "pooled_height", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "pooled_width", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "kernel_h", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "kernel_w", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "ext_kernel_h", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "ext_kernel_w", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "stride_h", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "stride_w", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "dilation_h", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "dilation_w", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<Dtype>(
+                      "top_data", KERNEL_ARG_GLOBAL_MEM));
+    ss << this->device_program_->function("StoPoolForwardTestSK", args);
+    ss << this->device_program_->kernel_loop("uint_tp", "index", "nthreads");
+    ss << "int_tp pw = index % pooled_width;" << std::endl;
+    ss << "int_tp ph = (index / pooled_width) % pooled_height;" << std::endl;
+    ss << "int_tp c = (index / pooled_width / pooled_height) % channels;"
+       << std::endl;
+    ss << "int_tp n = index / pooled_width / pooled_height / channels;"
+       << std::endl;
+    ss << "int_tp hstart = ph * stride_h;" << std::endl;
+    ss << "int_tp hend = min((int_tpc) (hstart + ext_kernel_h),"
+       << " (int_tpc) height);" << std::endl;
+    ss << "int_tp wstart = pw * stride_w;" << std::endl;
+    ss << "int_tp wend = min((int_tpc) (wstart + ext_kernel_w),"
+       << " (int_tpc) width);" << std::endl;
     // We set cumsum to be 0 to avoid divide-by-zero problems
-    Dtype cumsum = FLT_MIN;
-    Dtype cumvalues = 0.;
-    bottom_data += (n * channels + c) * height * width;
+    ss << "Dtype cumsum = DTYPE_MIN;" << std::endl;
+    ss << "Dtype cumvalues = 0.;" << std::endl;
+    ss << "bottom_data += (n * channels + c) * height * width;" << std::endl;
     // First pass: get sum
-    for (int_tp h = hstart; h < hend; h += dilation_h) {
-      for (int_tp w = wstart; w < wend; w += dilation_w) {
-        cumsum += bottom_data[h * width + w];
-        cumvalues += bottom_data[h * width + w] * bottom_data[h * width + w];
-      }
-    }
-    top_data[index] = cumvalues / cumsum;
+    ss << "for (int_tp h = hstart; h < hend; h += dilation_h) {" << std::endl;
+    ss << "for (int_tp w = wstart; w < wend; w += dilation_w) {" << std::endl;
+    ss << "cumsum += bottom_data[h * width + w];" << std::endl;
+    ss << "cumvalues += bottom_data[h * width + w]"
+       << " * bottom_data[h * width + w];" << std::endl;
+    ss << "}" << std::endl;
+    ss << "}" << std::endl;
+    ss << "top_data[index] = cumvalues / cumsum;" << std::endl;
+    ss << "}" << std::endl;
+    ss << "}" << std::endl;
   }
-}
 
-template<typename Dtype>
-__global__ void MaxPoolBackward(const int_tp nthreads, const Dtype* top_diff,
-                                const int_tp* mask, const Dtype* top_mask,
-                                const int_tp num, const int_tp channels,
-                                const int_tp height, const int_tp width,
-                                const int_tp pooled_height,
-                                const int_tp pooled_width,
-                                const int_tp kernel_h, const int_tp kernel_w,
-                                const int_tp ext_kernel_h,
-                                const int_tp ext_kernel_w,
-                                const int_tp stride_h, const int_tp stride_w,
-                                const int_tp dilation_h,
-                                const int_tp dilation_w, const int_tp pad_h,
-                                const int_tp pad_w,
-                                Dtype* bottom_diff) {
-  CUDA_KERNEL_LOOP(index, nthreads) {
+  {
+    KernelArgs args;
+    args.push_back(this->device_program_->template create_kernel_arg<uint_tp>(
+                      "nthreads", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<Dtype>(
+                      "top_diff", KERNEL_ARG_CONST | KERNEL_ARG_GLOBAL_MEM));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "mask", KERNEL_ARG_CONST | KERNEL_ARG_GLOBAL_MEM));
+    args.push_back(this->device_program_->template create_kernel_arg<Dtype>(
+                      "top_mask", KERNEL_ARG_CONST | KERNEL_ARG_GLOBAL_MEM));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "num", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "channels", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "height", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "width", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "pooled_height", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "pooled_width", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "kernel_h", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "kernel_w", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "ext_kernel_h", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "ext_kernel_w", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "stride_h", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "stride_w", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "dilation_h", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "dilation_w", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "pad_h", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "pad_w", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<Dtype>(
+                      "bottom_diff", KERNEL_ARG_GLOBAL_MEM));
+    ss << this->device_program_->function("MaxPoolBackwardSK", args);
+    ss << this->device_program_->kernel_loop("uint_tp", "index", "nthreads");
     // find out the local index
     // find out the local offset
-    int_tp w = index % width;
-    int_tp h = (index / width) % height;
-    int_tp c = (index / width / height) % channels;
-    int_tp n = index / width / height / channels;
-
-    int_tp phstart =
-        (h + pad_h < ext_kernel_h) ? 0 : (h + pad_h - ext_kernel_h)
-            / stride_h + 1;
-    int_tp phend = min((int_tpc) ((h + pad_h) / stride_h + 1L),
-                       (int_tpc) pooled_height);
-    int_tp pwstart =
-        (w + pad_w < ext_kernel_w) ? 0 : (w + pad_w - ext_kernel_w)
-            / stride_w + 1;
-    int_tp pwend = min((int_tpc) ((w + pad_w) / stride_w + 1L),
-                       (int_tpc) pooled_width);
-
-    Dtype gradient = 0.0;
-    int_tp offset = (n * channels + c) * pooled_height * pooled_width;
-    top_diff += offset;
-    if (mask) {
-      mask += offset;
-      for (int_tp ph = phstart; ph < phend; ++ph) {
-        for (int_tp pw = pwstart; pw < pwend; ++pw) {
-          if (mask[ph * pooled_width + pw] == h * width + w) {
-            gradient += top_diff[ph * pooled_width + pw];
-          }
-        }
-      }
-    } else {
-      top_mask += offset;
-      for (int_tp ph = phstart; ph < phend; ++ph) {
-        for (int_tp pw = pwstart; pw < pwend; ++pw) {
-          if (top_mask[ph * pooled_width + pw] == h * width + w) {
-            gradient += top_diff[ph * pooled_width + pw];
-          }
-        }
-      }
-    }
-    bottom_diff[index] = gradient;
+    ss << "int_tp w = index % width;" << std::endl;
+    ss << "int_tp h = (index / width) % height;" << std::endl;
+    ss << "int_tp c = (index / width / height) % channels;" << std::endl;
+    ss << "int_tp n = index / width / height / channels;" << std::endl;
+    ss << "int_tp phstart ="
+       << " (h + pad_h < ext_kernel_h) ? 0 : (h + pad_h - ext_kernel_h)"
+       << " / stride_h + 1;" << std::endl;
+    ss << "int_tp phend = min((int_tpc) ((h + pad_h) / stride_h + 1L),"
+       << " (int_tpc) pooled_height);" << std::endl;
+    ss << "int_tp pwstart ="
+       << " (w + pad_w < ext_kernel_w) ? 0 : (w + pad_w - ext_kernel_w)"
+       << " / stride_w + 1;" << std::endl;
+    ss << "int_tp pwend = min((int_tpc) ((w + pad_w) / stride_w + 1L),"
+          " (int_tpc) pooled_width);" << std::endl;
+    ss << "Dtype gradient = 0.0;" << std::endl;
+    ss << "int_tp offset = (n * channels + c) * pooled_height * pooled_width;"
+       << std::endl;
+    ss << "top_diff += offset;" << std::endl;
+    ss << "if (mask) {" << std::endl;
+    ss << "mask += offset;" << std::endl;
+    ss << "for (int_tp ph = phstart; ph < phend; ++ph) {" << std::endl;
+    ss << "for (int_tp pw = pwstart; pw < pwend; ++pw) {" << std::endl;
+    ss << "if (mask[ph * pooled_width + pw] == h * width + w) {" << std::endl;
+    ss << "gradient += top_diff[ph * pooled_width + pw];" << std::endl;
+    ss << "}" << std::endl;
+    ss << "}" << std::endl;
+    ss << "}" << std::endl;
+    ss << "} else {" << std::endl;
+    ss << "top_mask += offset;" << std::endl;
+    ss << "for (int_tp ph = phstart; ph < phend; ++ph) {" << std::endl;
+    ss << "for (int_tp pw = pwstart; pw < pwend; ++pw) {" << std::endl;
+    ss << "if (top_mask[ph * pooled_width + pw] == (Dtype)(h * width + w)) {"
+       << std::endl;
+    ss << "gradient += top_diff[ph * pooled_width + pw];" << std::endl;
+    ss << "}" << std::endl;
+    ss << "}" << std::endl;
+    ss << "}" << std::endl;
+    ss << "}" << std::endl;
+    ss << "bottom_diff[index] = gradient;" << std::endl;
+    ss << "}" << std::endl;
+    ss << "}" << std::endl;
   }
-}
 
-template<typename Dtype>
-__global__ void MaxPoolNDForward(const int_tp n, const int_tp num_axes,
-                                 const Dtype* bottom_data,
-                                 const int_tp channels, const int_tp* size,
-                                 const int_tp* pooled_size,
-                                 const int_tp* kernel_size,
-                                 const int_tp* ext_kernel_size,
-                                 const int_tp* stride, const int_tp* dilation,
-                                 const int_tp* pad, Dtype* top_data,
-                                 int_tp* mask, Dtype* top_mask) {
-  int_tp d_idx[6];  // NOLINT(runtime/arrays)
-  int_tp d_start[6];  // NOLINT(runtime/arrays)
-  int_tp d_end[6];  // NOLINT(runtime/arrays)
-  int_tp d_iter[6];  // NOLINT(runtime/arrays)
-  int_tp i;
-
-  CUDA_KERNEL_LOOP(index, n) {
-    int_tp offset = 1;
-    int_tp num = index;
-    for (i = num_axes - 1; i >= 0; --i) {
-      d_idx[i] = num % pooled_size[i];
-      d_start[i] = d_idx[i] * stride[i] - pad[i];
-      d_end[i] = min((int_tpc) (d_start[i] + ext_kernel_size[i]),
-                     (int_tpc) (size[i]));
-      while (d_start[i] < 0) {
-        d_start[i] += dilation[i];
-      }
-
-      num /= pooled_size[i];
-      offset *= size[i];
-      d_iter[i] = d_start[i];
-
-      if (d_start[i] >= d_end[i]) {
-        top_data[index] = -FLT_MAX;
-        if (mask) {
-          mask[index] = -1;
-        } else {
-          top_mask[index] = -1;
-        }
-        return;
-      }
-    }
-    int_tp chan = num % channels;
-    num /= channels;
-    offset *= (num * channels + chan);
-
-    Dtype maxval = -FLT_MAX;
-    int_tp maxidx = -1;
-    int_tp final_offset = 0;
-
-    bool incremented;
-    do {
-      final_offset = 0;
-      int_tp size_prod = 1;
-      for (i = num_axes - 1; i >= 0; --i) {
-        final_offset += d_iter[i] * size_prod;
-        size_prod *= size[i];
-      }
-
-      if (bottom_data[final_offset + offset] > maxval) {
-        maxidx = final_offset;
-        maxval = bottom_data[offset + final_offset];
-      }
-
-      incremented = false;
-      for (i = num_axes - 1; i >= 0; --i) {
-        if (d_iter[i] >= d_end[i] - dilation[i]) {
-          d_iter[i] = d_start[i];
-        } else {
-          d_iter[i] += dilation[i];
-          incremented = true;
-          break;
-        }
-      }
-    } while (incremented);
-
-    top_data[index] = maxval;
-    if (mask) {
-      mask[index] = maxidx;
-    } else {
-      top_mask[index] = maxidx;
-    }
-  }
-}
-
-template<typename Dtype>
-__global__ void MaxPoolNDBackward(const int_tp n, const int_tp num_axes,
-                                  const Dtype* top_diff, const int_tp* mask,
-                                  const Dtype* top_mask, const int_tp channels,
-                                  const int_tp* size, const int_tp* pooled_size,
-                                  const int_tp* kernel_size,
-                                  const int_tp* ext_kernel_size,
-                                  const int_tp* stride, const int_tp* dilation,
-                                  const int_tp* pad, Dtype* bottom_diff) {
-  int_tp d_idx[6];  // NOLINT(runtime/arrays)
-  int_tp d_start[6];  // NOLINT(runtime/arrays)
-  int_tp d_end[6];  // NOLINT(runtime/arrays)
-  int_tp d_iter[6];  // NOLINT(runtime/arrays)
-  int_tp i;
-
-  CUDA_KERNEL_LOOP(index, n) {
+  {
+    KernelArgs args;
+    args.push_back(this->device_program_->template create_kernel_arg<uint_tp>(
+                      "nthreads", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<Dtype>(
+                      "top_diff", KERNEL_ARG_CONST | KERNEL_ARG_GLOBAL_MEM));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "num", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "channels", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "height", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "width", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "pooled_height", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "pooled_width", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "kernel_h", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "kernel_w", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "ext_kernel_h", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "ext_kernel_w", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "stride_h", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "stride_w", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "dilation_h", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "dilation_w", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "pad_h", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "pad_w", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<Dtype>(
+                      "bottom_diff", KERNEL_ARG_GLOBAL_MEM));
+    ss << this->device_program_->function("AvePoolBackwardSK", args);
+    ss << this->device_program_->kernel_loop("uint_tp", "index", "nthreads");
     // find out the local index
     // find out the local offset
-    int_tp offset = 1;
-    int_tp num = index;
-    for (i = num_axes - 1; i >= 0; --i) {
-      d_idx[i] = num % size[i];
-      d_start[i] =
-          (d_idx[i] + pad[i] < ext_kernel_size[i]) ?
-              0L : (d_idx[i] + pad[i] - ext_kernel_size[i]) / stride[i] + 1L;
-      d_end[i] = min((int_tpc) ((d_idx[i] + pad[i]) / stride[i]),
-                     (int_tpc) (pooled_size[i] - 1L));
-      num /= size[i];
-      offset *= pooled_size[i];
-      d_iter[i] = d_start[i];
-
-      if (d_start[i] > d_end[i]) {
-        bottom_diff[index] = 0;
-        return;
-      }
-    }
-
-    int_tp chan = num % channels;
-    num /= channels;
-    offset *= (num * channels + chan);
-
-    Dtype gradient = 0.0;
-    int_tp final_offset = 0;
-    int_tp im_offset = 0;
-
-    bool incremented;
-    do {
-      final_offset = offset;
-      im_offset = 0;
-      int_tp size_prod = 1;
-      int_tp pooled_size_prod = 1;
-      for (i = num_axes - 1; i >= 0; --i) {
-        final_offset += d_iter[i] * pooled_size_prod;
-        im_offset += d_idx[i] * size_prod;
-        size_prod *= size[i];
-        pooled_size_prod *= pooled_size[i];
-      }
-      if (mask) {
-        if (mask[final_offset] == im_offset) {
-          gradient += top_diff[final_offset];
-        }
-      } else {
-        if (top_mask[final_offset] == im_offset) {
-          gradient += top_diff[final_offset];
-        }
-      }
-
-      incremented = false;
-      for (i = num_axes - 1; i >= 0; --i) {
-        if (d_iter[i] >= d_end[i]) {
-          d_iter[i] = d_start[i];
-        } else {
-          ++d_iter[i];
-          incremented = true;
-          break;
-        }
-      }
-    } while (incremented);
-    bottom_diff[index] = gradient;
+    ss << "const int_tp w = index % width;" << std::endl;
+    ss << "const int_tp h = (index / width) % height;" << std::endl;
+    ss << "const int_tp c = (index / width / height) % channels;" << std::endl;
+    ss << "const int_tp n = index / width / height / channels;" << std::endl;
+    ss << "int_tp phstart = "
+       << "(h + pad_h < ext_kernel_h) ? 0 :"
+       << "(h + pad_h - ext_kernel_h) / stride_h + 1;" << std::endl;
+    ss << "int_tp phend = min(((h + pad_h) / stride_h + 1), pooled_height);"
+       << std::endl;
+    ss << "int_tp pwstart = "
+       << "(w + pad_w < ext_kernel_w) ? 0 :"
+       << "(w + pad_w - ext_kernel_w) / stride_w + 1;" << std::endl;
+    ss << "int_tp pwend = min(((w + pad_w) / stride_w + 1), pooled_width);"
+       << std::endl;
+    ss << "Dtype gradient = 0.0;" << std::endl;
+    ss << this->device_program_->global_ptr("const Dtype", "top_diff_slice")
+       << " = top_diff + (n * channels + c) * pooled_height * pooled_width;"
+       << std::endl;
+    ss << "for (int_tp ph = phstart; ph < phend; ++ph) {" << std::endl;
+    ss << "for (int_tp pw = pwstart; pw < pwend; ++pw) {" << std::endl;
+    // figure out the pooling size
+    ss << "int_tp hstart = ph * stride_h - pad_h;" << std::endl;
+    ss << "int_tp wstart = pw * stride_w - pad_w;" << std::endl;
+    ss << "int_tp hend = min(hstart + ext_kernel_h, height + pad_h);"
+       << std::endl;
+    ss << "int_tp wend = min(wstart + ext_kernel_w, width + pad_w);"
+       << std::endl;
+    ss << "int_tp pool_size ="
+       << "((hend - hstart - 1) / dilation_h + 1) *"
+       << "((wend - wstart - 1) / dilation_w + 1);" << std::endl;
+    ss << "if (h >= hstart && h < hend &&"
+       << "(h - hstart) % dilation_h == 0 &&"
+       << "w >= wstart && w < wend &&"
+       << "(w - wstart) % dilation_w == 0) {" << std::endl;
+    ss << "gradient += top_diff_slice[ph * pooled_width + pw]"
+       << " / ((Dtype)pool_size);" << std::endl;
+    ss << "}" << std::endl;
+    ss << "}" << std::endl;
+    ss << "}" << std::endl;
+    ss << "bottom_diff[index] = gradient;" << std::endl;
+    ss << "}" << std::endl;
+    ss << "}" << std::endl;
   }
-}
-#endif  // USE_CUDA
 
-template<typename Dtype>
-void PoolingLayer<Dtype>::Forward_gpu(const vector<Blob<Dtype>*>& bottom,
-                                      const vector<Blob<Dtype>*>& top) {
-  const Dtype* bottom_data = bottom[0]->gpu_data();
-  Dtype* top_data = top[0]->mutable_gpu_data();
-  int_tp count = top[0]->count();
+  {
+    KernelArgs args;
+    args.push_back(this->device_program_->template create_kernel_arg<uint_tp>(
+                      "nthreads", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<Dtype>(
+                      "bottom_data", KERNEL_ARG_CONST | KERNEL_ARG_GLOBAL_MEM));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "num", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "channels", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "height", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "width", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "pooled_height", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "pooled_width", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "kernel_h", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "kernel_w", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "stride_h", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "stride_w", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "pad_h", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "pad_w", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<Dtype>(
+                      "top_data", KERNEL_ARG_GLOBAL_MEM));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "mask", KERNEL_ARG_GLOBAL_MEM));
+    args.push_back(this->device_program_->template create_kernel_arg<Dtype>(
+                      "top_mask", KERNEL_ARG_GLOBAL_MEM));
+    ss << this->device_program_->function("MaxPoolForward", args);
+    ss << this->device_program_->kernel_loop("uint_tp", "index", "nthreads");
+    ss << "const int_tp pw = index % pooled_width;" << std::endl;
+    ss << "const int_tp ph = (index / pooled_width) % pooled_height;"
+       << std::endl;
+    ss << "const int_tp c = (index / pooled_width / pooled_height) % channels;"
+       << std::endl;
+    ss << "const int_tp n = index / pooled_width / pooled_height / channels;"
+       << std::endl;
+    ss << "int_tp hstart = ph * stride_h - pad_h;" << std::endl;
+    ss << "int_tp wstart = pw * stride_w - pad_w;" << std::endl;
+    ss << "const int_tp hend = min((int_tpc) (hstart + kernel_h),"
+       << " (int_tpc) height);" << std::endl;
+    ss << "const int_tp wend = min((int_tpc) (wstart + kernel_w),"
+       << " (int_tpc) width);" << std::endl;
+    ss << "hstart = max((int_tpc) (hstart), (int_tpc) (0));" << std::endl;
+    ss << "wstart = max((int_tpc) (wstart), (int_tpc) (0));" << std::endl;
+    ss << "Dtype maxval = -DTYPE_MAX;" << std::endl;
+    ss << "int_tp maxidx = -1;" << std::endl;
+    ss << this->device_program_->global_ptr("const Dtype", "bottom_slice")
+       << " = bottom_data + (n * channels + c) * height * width;" << std::endl;
+    ss << "for (int_tp h = hstart; h < hend; ++h) {" << std::endl;
+    ss << "for (int_tp w = wstart; w < wend; ++w) {" << std::endl;
+    ss << "if (bottom_slice[h * width + w] > maxval) {" << std::endl;
+    ss << "maxidx = h * width + w;" << std::endl;
+    ss << "maxval = bottom_slice[maxidx];" << std::endl;
+    ss << "}" << std::endl;
+    ss << "}" << std::endl;
+    ss << "}" << std::endl;
+    ss << "top_data[index] = maxval;" << std::endl;
+    ss << "if (mask) {" << std::endl;
+    ss << "mask[index] = maxidx;" << std::endl;
+    ss << "} else {" << std::endl;
+    ss << "top_mask[index] = maxidx;" << std::endl;
+    ss << "}" << std::endl;
+    ss << "}" << std::endl;
+    ss << "}" << std::endl;
+  }
+
+  {
+    KernelArgs args;
+    args.push_back(this->device_program_->template create_kernel_arg<uint_tp>(
+                      "nthreads", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<Dtype>(
+                      "bottom_data", KERNEL_ARG_CONST | KERNEL_ARG_GLOBAL_MEM));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "num", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "channels", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "height", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "width", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "pooled_height", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "pooled_width", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "kernel_h", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "kernel_w", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "stride_h", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "stride_w", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "pad_h", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "pad_w", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<Dtype>(
+                      "top_data", KERNEL_ARG_GLOBAL_MEM));
+    ss << this->device_program_->function("AvePoolForward", args);
+    ss << this->device_program_->kernel_loop("uint_tp", "index", "nthreads");
+    ss << "const int_tp pw = index % pooled_width;" << std::endl;
+    ss << "const int_tp ph = (index / pooled_width) % pooled_height;"
+       << std::endl;
+    ss << "const int_tp c = (index / pooled_width / pooled_height) % channels;"
+       << std::endl;
+    ss << "const int_tp n = index / pooled_width / pooled_height / channels;"
+       << std::endl;
+    ss << "int_tp hstart = ph * stride_h - pad_h;" << std::endl;
+    ss << "int_tp wstart = pw * stride_w - pad_w;" << std::endl;
+    ss << "int_tp hend = min((int_tpc) (hstart + kernel_h),"
+       << " (int_tpc) (height + pad_h));" << std::endl;
+    ss << "int_tp wend = min((int_tpc) (wstart + kernel_w),"
+       << " (int_tpc) (width + pad_w));" << std::endl;
+    ss << "const int_tp pool_size = (hend - hstart) * (wend - wstart);"
+       << std::endl;
+    ss << "hstart = max((int_tpc) (hstart), (int_tpc) (0));" << std::endl;
+    ss << "wstart = max((int_tpc) (wstart), (int_tpc) (0));" << std::endl;
+    ss << "hend = min((int_tpc) (hend), (int_tpc) (height));" << std::endl;
+    ss << "wend = min((int_tpc) (wend), (int_tpc) (width));" << std::endl;
+    ss << "Dtype aveval = 0;" << std::endl;
+    ss << this->device_program_->global_ptr("const Dtype", "bottom_slice")
+       << " = bottom_data + (n * channels + c) * height * width;" << std::endl;
+    ss << "for (int_tp h = hstart; h < hend; ++h) {" << std::endl;
+    ss << "for (int_tp w = wstart; w < wend; ++w) {" << std::endl;
+    ss << "aveval += bottom_slice[h * width + w];" << std::endl;
+    ss << "}" << std::endl;
+    ss << "}" << std::endl;
+    ss << "top_data[index] = aveval / ((Dtype)pool_size);" << std::endl;
+    ss << "}" << std::endl;
+    ss << "}" << std::endl;
+  }
+
+  {
+    KernelArgs args;
+    args.push_back(this->device_program_->template create_kernel_arg<uint_tp>(
+                      "nthreads", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<Dtype>(
+                      "bottom_data", KERNEL_ARG_CONST | KERNEL_ARG_GLOBAL_MEM));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "num", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "channels", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "height", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "width", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "pooled_height", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "pooled_width", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "kernel_h", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "kernel_w", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "stride_h", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "stride_w", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<Dtype>(
+                      "rand_idx", KERNEL_ARG_GLOBAL_MEM));
+    args.push_back(this->device_program_->template create_kernel_arg<Dtype>(
+                      "top_data", KERNEL_ARG_GLOBAL_MEM));
+    ss << this->device_program_->function("StoPoolForwardTrain", args);
+    ss << this->device_program_->kernel_loop("uint_tp", "index", "nthreads");
+    ss << "const int_tp pw = index % pooled_width;" << std::endl;
+    ss << "const int_tp ph = (index / pooled_width) % pooled_height;"
+       << std::endl;
+    ss << "const int_tp c = (index / pooled_width / pooled_height) % channels;"
+       << std::endl;
+    ss << "const int_tp n = index / pooled_width / pooled_height / channels;"
+       << std::endl;
+    ss << "const int_tp hstart = ph * stride_h;" << std::endl;
+    ss << "const int_tp hend = min((int_tpc) (hstart + kernel_h),"
+       << " (int_tpc) height);" << std::endl;
+    ss << "const int_tp wstart = pw * stride_w;" << std::endl;
+    ss << "const int_tp wend = min((int_tpc) (wstart + kernel_w),"
+       << " (int_tpc) width);" << std::endl;
+    ss << "Dtype cumsum = 0.;" << std::endl;
+    ss << this->device_program_->global_ptr("const Dtype", "bottom_slice")
+       << " = bottom_data + (n * channels + c) * height * width;" << std::endl;
+    // First pass: get sum
+    ss << "for (int_tp h = hstart; h < hend; ++h) {" << std::endl;
+    ss << "for (int_tp w = wstart; w < wend; ++w) {" << std::endl;
+    ss << "cumsum += bottom_slice[h * width + w];" << std::endl;
+    ss << "}" << std::endl;
+    ss << "}" << std::endl;
+    ss << "const float thres = rand_idx[index] * cumsum;" << std::endl;
+    // Second pass: get value, and set index.
+    ss << "cumsum = 0;" << std::endl;
+    ss << "for (int_tp h = hstart; h < hend; ++h) {" << std::endl;
+    ss << "for (int_tp w = wstart; w < wend; ++w) {" << std::endl;
+    ss << "cumsum += bottom_slice[h * width + w];" << std::endl;
+    ss << "if (cumsum >= ((Dtype)thres)) {" << std::endl;
+    ss << "rand_idx[index] = ((n * channels + c) * height + h) * width + w;"
+       << std::endl;
+    ss << "top_data[index] = bottom_slice[h * width + w];" << std::endl;
+    ss << "return;" << std::endl;
+    ss << "}" << std::endl;
+    ss << "}" << std::endl;
+    ss << "}" << std::endl;
+    ss << "}" << std::endl;
+    ss << "}" << std::endl;
+  }
+
+  {
+    KernelArgs args;
+    args.push_back(this->device_program_->template create_kernel_arg<uint_tp>(
+                      "nthreads", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<Dtype>(
+                      "bottom_data", KERNEL_ARG_CONST | KERNEL_ARG_GLOBAL_MEM));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "num", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "channels", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "height", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "width", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "pooled_height", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "pooled_width", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "kernel_h", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "kernel_w", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "stride_h", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "stride_w", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<Dtype>(
+                      "top_data", KERNEL_ARG_GLOBAL_MEM));
+    ss << this->device_program_->function("StoPoolForwardTest", args);
+    ss << this->device_program_->kernel_loop("uint_tp", "index", "nthreads");
+    ss << "const int_tp pw = index % pooled_width;" << std::endl;
+    ss << "const int_tp ph = (index / pooled_width) % pooled_height;"
+       << std::endl;
+    ss << "const int_tp c = (index / pooled_width / pooled_height) % channels;"
+       << std::endl;
+    ss << "const int_tp n = index / pooled_width / pooled_height / channels;"
+       << std::endl;
+    ss << "const int_tp hstart = ph * stride_h;" << std::endl;
+    ss << "const int_tp hend = min((int_tpc) (hstart + kernel_h),"
+       << " (int_tpc) height);" << std::endl;
+    ss << "const int_tp wstart = pw * stride_w;" << std::endl;
+    ss << "const int_tp wend = min((int_tpc) (wstart + kernel_w),"
+       << " (int_tpc) width);" << std::endl;
+    // We set cumsum to be 0 to avoid divide-by-zero problems
+    ss << "Dtype cumsum = 0.;" << std::endl;
+    ss << "Dtype cumvalues = 0.;" << std::endl;
+    ss << this->device_program_->global_ptr("const Dtype", "bottom_slice")
+       << " = bottom_data + (n * channels + c) * height * width;" << std::endl;
+    // First pass: get sum
+    ss << "for (int_tp h = hstart; h < hend; ++h) {" << std::endl;
+    ss << "for (int_tp w = wstart; w < wend; ++w) {" << std::endl;
+    ss << "cumsum += bottom_slice[h * width + w];" << std::endl;
+    ss << "cumvalues += bottom_slice[h * width + w]"
+       << " * bottom_slice[h * width + w];" << std::endl;
+    ss << "}" << std::endl;
+    ss << "}" << std::endl;
+    ss << "top_data[index] = (cumsum > (Dtype)(0.0)) ? "
+       << "cumvalues / cumsum : (Dtype)(0.0);" << std::endl;
+    ss << "}" << std::endl;
+    ss << "}" << std::endl;
+  }
+
+  {
+    KernelArgs args;
+    args.push_back(this->device_program_->template create_kernel_arg<uint_tp>(
+                      "nthreads", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<Dtype>(
+                      "top_diff", KERNEL_ARG_CONST | KERNEL_ARG_GLOBAL_MEM));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "mask", KERNEL_ARG_CONST | KERNEL_ARG_GLOBAL_MEM));
+    args.push_back(this->device_program_->template create_kernel_arg<Dtype>(
+                      "top_mask", KERNEL_ARG_CONST | KERNEL_ARG_GLOBAL_MEM));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "num", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "channels", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "height", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "width", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "pooled_height", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "pooled_width", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "kernel_h", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "kernel_w", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "stride_h", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "stride_w", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "pad_h", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "pad_w", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<Dtype>(
+                      "bottom_diff", KERNEL_ARG_GLOBAL_MEM));
+    ss << this->device_program_->function("MaxPoolBackward", args);
+    ss << this->device_program_->kernel_loop("uint_tp", "index", "nthreads");
+    // find out the local index
+    // find out the local offset
+    ss << "const int_tp w = index % width;" << std::endl;
+    ss << "const int_tp h = (index / width) % height;" << std::endl;
+    ss << "const int_tp c = (index / width / height) % channels;" << std::endl;
+    ss << "const int_tp n = index / width / height / channels;" << std::endl;
+    ss << "const int_tp phstart ="
+       << "(h + pad_h < kernel_h) ? 0 : (h + pad_h - kernel_h) / stride_h + 1;"
+       << std::endl;
+    ss << "const int_tp phend = min((int_tpc) ((h + pad_h) / stride_h + 1L),"
+       << "(int_tpc) pooled_height);" << std::endl;
+    ss << "const int_tp pwstart ="
+       << "(w + pad_w < kernel_w) ? 0 : (w + pad_w - kernel_w) / stride_w + 1;"
+       << std::endl;
+    ss << "const int_tp pwend = min((int_tpc) ((w + pad_w) / stride_w + 1L),"
+       << " (int_tpc) pooled_width);" << std::endl;
+    ss << "Dtype gradient = 0;" << std::endl;
+    ss << "const int_tp offset = (n * channels + c)"
+       << " * pooled_height * pooled_width;" << std::endl;
+    ss << this->device_program_->global_ptr("const Dtype", "top_diff_slice")
+       << " = top_diff + offset;" << std::endl;
+    ss << "if (mask) {" << std::endl;
+    ss << this->device_program_->global_ptr("const int_tp", "mask_slice")
+       << " = mask + offset;" << std::endl;
+    ss << "for (int_tp ph = phstart; ph < phend; ++ph) {" << std::endl;
+    ss << "for (int_tp pw = pwstart; pw < pwend; ++pw) {" << std::endl;
+    ss << "if (mask_slice[ph * pooled_width + pw] == h * width + w) {"
+       << std::endl;
+    ss << "gradient += top_diff_slice[ph * pooled_width + pw];" << std::endl;
+    ss << "}" << std::endl;
+    ss << "}" << std::endl;
+    ss << "}" << std::endl;
+    ss << "} else {" << std::endl;
+    ss << this->device_program_->global_ptr("const Dtype", "top_mask_slice")
+       << " = top_mask + offset;" << std::endl;
+    ss << "for (int_tp ph = phstart; ph < phend; ++ph) {" << std::endl;
+    ss << "for (int_tp pw = pwstart; pw < pwend; ++pw) {" << std::endl;
+    ss << "if (top_mask_slice[ph * pooled_width + pw] == "
+       << "(Dtype)(h * width + w)) {" << std::endl;
+    ss << "gradient += top_diff_slice[ph * pooled_width + pw];" << std::endl;
+    ss << "}" << std::endl;
+    ss << "}" << std::endl;
+    ss << "}" << std::endl;
+    ss << "}" << std::endl;
+    ss << "bottom_diff[index] = gradient;" << std::endl;
+    ss << "}" << std::endl;
+    ss << "}" << std::endl;
+  }
+
+  {
+    KernelArgs args;
+    args.push_back(this->device_program_->template create_kernel_arg<uint_tp>(
+                      "nthreads", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<Dtype>(
+                      "top_diff", KERNEL_ARG_CONST | KERNEL_ARG_GLOBAL_MEM));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "num", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "channels", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "height", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "width", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "pooled_height", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "pooled_width", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "kernel_h", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "kernel_w", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "stride_h", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "stride_w", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "pad_h", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "pad_w", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<Dtype>(
+                      "bottom_diff", KERNEL_ARG_GLOBAL_MEM));
+    ss << this->device_program_->function("AvePoolBackward", args);
+    ss << this->device_program_->kernel_loop("uint_tp", "index", "nthreads");
+    // find out the local index
+    // find out the local offset
+    ss << "const int_tp w = index % width + pad_w;" << std::endl;
+    ss << "const int_tp h = (index / width) % height + pad_h;" << std::endl;
+    ss << "const int_tp c = (index / width / height) % channels;" << std::endl;
+    ss << "const int_tp n = index / width / height / channels;" << std::endl;
+    ss << "const int_tp phstart = (h < kernel_h) ? 0"
+       << " : (h - kernel_h) / stride_h + 1;" << std::endl;
+    ss << "const int_tp phend = min((int_tpc) (h / stride_h + 1),"
+       << " (int_tpc) (pooled_height));" << std::endl;
+    ss << "const int_tp pwstart = (w < kernel_w) ? 0"
+       << " : (w - kernel_w) / stride_w + 1;" << std::endl;
+    ss << "const int_tp pwend = min((int_tpc) (w / stride_w + 1),"
+       << " (int_tpc) (pooled_width));" << std::endl;
+    ss << "Dtype gradient = 0;" << std::endl;
+    ss << this->device_program_->global_ptr("const Dtype", "top_diff_slice")
+       << " = top_diff + (n * channels + c) * pooled_height * pooled_width;"
+       << std::endl;
+    ss << "for (int_tp ph = phstart; ph < phend; ++ph) {" << std::endl;
+    ss << "for (int_tp pw = pwstart; pw < pwend; ++pw) {" << std::endl;
+    // figure out the pooling size
+    ss << "int_tp hstart = ph * stride_h - pad_h;" << std::endl;
+    ss << "int_tp wstart = pw * stride_w - pad_w;" << std::endl;
+    ss << "int_tp hend = min((int_tpc) (hstart + kernel_h),"
+       << " (int_tpc) (height + pad_h));" << std::endl;
+    ss << "int_tp wend = min((int_tpc) (wstart + kernel_w),"
+       << " (int_tpc) (width + pad_w));" << std::endl;
+    ss << "int_tp pool_size = (hend - hstart) * (wend - wstart);" << std::endl;
+    ss << "gradient += top_diff_slice[ph * pooled_width + pw]"
+       << " / ((Dtype)pool_size);" << std::endl;
+    ss << "}" << std::endl;
+    ss << "}" << std::endl;
+    ss << "bottom_diff[index] = gradient;" << std::endl;
+    ss << "}" << std::endl;
+    ss << "}" << std::endl;
+  }
+
+  {
+    KernelArgs args;
+    args.push_back(this->device_program_->template create_kernel_arg<uint_tp>(
+                      "nthreads", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<Dtype>(
+                      "rand_idx", KERNEL_ARG_CONST | KERNEL_ARG_GLOBAL_MEM));
+    args.push_back(this->device_program_->template create_kernel_arg<Dtype>(
+                      "top_diff", KERNEL_ARG_CONST | KERNEL_ARG_GLOBAL_MEM));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "num", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "channels", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "height", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "width", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "pooled_height", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "pooled_width", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "kernel_h", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "kernel_w", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "stride_h", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "stride_w", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<Dtype>(
+                      "bottom_diff", KERNEL_ARG_GLOBAL_MEM));
+    ss << this->device_program_->function("StoPoolBackward", args);
+    ss << this->device_program_->kernel_loop("uint_tp", "index", "nthreads");
+    // find out the local index
+    // find out the local offset
+    ss << "const int_tp w = index % width;" << std::endl;
+    ss << "const int_tp h = (index / width) % height;" << std::endl;
+    ss << "const int_tp c = (index / width / height) % channels;" << std::endl;
+    ss << "const int_tp n = index / width / height / channels;" << std::endl;
+    ss << "const int_tp phstart = (h < kernel_h) ? 0"
+       << " : (h - kernel_h) / stride_h + 1;" << std::endl;
+    ss << "const int_tp phend = min((int_tpc) (h / stride_h + 1),"
+       << " (int_tpc) pooled_height);" << std::endl;
+    ss << "const int_tp pwstart = (w < kernel_w) ? 0"
+       << " : (w - kernel_w) / stride_w + 1;" << std::endl;
+    ss << "const int_tp pwend = min((int_tpc) (w / stride_w + 1),"
+       << " (int_tpc) pooled_width);" << std::endl;
+    ss << "Dtype gradient = 0;" << std::endl;
+    ss << this->device_program_->global_ptr("const Dtype", "rand_idx_slice")
+       << " = rand_idx + (n * channels + c) * pooled_height * pooled_width;"
+       << std::endl;
+    ss << this->device_program_->global_ptr("const Dtype", "top_diff_slice")
+       << " = top_diff + (n * channels + c) * pooled_height * pooled_width;"
+       << std::endl;
+    ss << "for (int_tp ph = phstart; ph < phend; ++ph) {" << std::endl;
+    ss << "for (int_tp pw = pwstart; pw < pwend; ++pw) {" << std::endl;
+    ss << "gradient += top_diff_slice[ph * pooled_width + pw]"
+       << " * (index  == (int_tpc)(rand_idx_slice[ph * pooled_width + pw]) ?"
+       << " (Dtype)1.0 : (Dtype)0.0);"  << std::endl;
+    ss << "}" << std::endl;
+    ss << "}" << std::endl;
+    ss << "bottom_diff[index] = gradient;" << std::endl;
+    ss << "}" << std::endl;
+    ss << "}" << std::endl;
+  }
+
+  {
+    KernelArgs args;
+    args.push_back(this->device_program_->template create_kernel_arg<uint_tp>(
+                      "n", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "num_axes", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<Dtype>(
+                      "bottom_data", KERNEL_ARG_CONST | KERNEL_ARG_GLOBAL_MEM));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "channels", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "size", KERNEL_ARG_CONST | KERNEL_ARG_GLOBAL_MEM));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "pooled_size", KERNEL_ARG_CONST | KERNEL_ARG_GLOBAL_MEM));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "kernel_size", KERNEL_ARG_CONST | KERNEL_ARG_GLOBAL_MEM));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "ext_kernel_size", KERNEL_ARG_CONST |
+                                         KERNEL_ARG_GLOBAL_MEM));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "stride", KERNEL_ARG_CONST | KERNEL_ARG_GLOBAL_MEM));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "dilation", KERNEL_ARG_CONST | KERNEL_ARG_GLOBAL_MEM));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "pad", KERNEL_ARG_CONST | KERNEL_ARG_GLOBAL_MEM));
+    args.push_back(this->device_program_->template create_kernel_arg<Dtype>(
+                      "top_data", KERNEL_ARG_GLOBAL_MEM));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "mask", KERNEL_ARG_GLOBAL_MEM));
+    args.push_back(this->device_program_->template create_kernel_arg<Dtype>(
+                      "top_mask", KERNEL_ARG_GLOBAL_MEM));
+    ss << this->device_program_->function("MaxPoolForwardND", args);
+    ss << "int_tp d_idx[6];" << std::endl;
+    ss << "int_tp d_start[6];" << std::endl;
+    ss << "int_tp d_end[6];" << std::endl;
+    ss << "int_tp d_iter[6];" << std::endl;
+    ss << "int_tp i;" << std::endl;
+    ss << this->device_program_->kernel_loop("uint_tp", "index", "n");
+    ss << "int_tp offset = 1;" << std::endl;
+    ss << "int_tp num = index;" << std::endl;
+    ss << "for (i = num_axes - 1; i >= 0; --i) {" << std::endl;
+    ss << "d_idx[i] = num % pooled_size[i];" << std::endl;
+    ss << "d_start[i] = d_idx[i] * stride[i] - pad[i];" << std::endl;
+    ss << "d_end[i] = min((int_tpc) (d_start[i] + ext_kernel_size[i]),"
+       << " (int_tpc) (size[i]));" << std::endl;
+    ss << "while (d_start[i] < 0) {" << std::endl;
+    ss << "d_start[i] += dilation[i];" << std::endl;
+    ss << "}" << std::endl;
+    ss << "num /= pooled_size[i];" << std::endl;
+    ss << "offset *= size[i];" << std::endl;
+    ss << "d_iter[i] = d_start[i];" << std::endl;
+    ss << "if (d_start[i] >= d_end[i]) {" << std::endl;
+    ss << "top_data[index] = -DTYPE_MAX;" << std::endl;
+    ss << "if (mask) {" << std::endl;
+    ss << "mask[index] = -1;" << std::endl;
+    ss << "} else {" << std::endl;
+    ss << "top_mask[index] = -1;" << std::endl;
+    ss << "}" << std::endl;
+    ss << "return;" << std::endl;
+    ss << "}" << std::endl;
+    ss << "}" << std::endl;
+    ss << "int_tp chan = num % channels;" << std::endl;
+    ss << "num /= channels;" << std::endl;
+    ss << "offset *= (num * channels + chan);" << std::endl;
+    ss << "Dtype maxval = -DTYPE_MAX;" << std::endl;
+    ss << "int_tp maxidx = -1;" << std::endl;
+    ss << "int_tp final_offset = 0;" << std::endl;
+    ss << "bool incremented;" << std::endl;
+    ss << "do {" << std::endl;
+    ss << "final_offset = 0;" << std::endl;
+    ss << "int_tp size_prod = 1;" << std::endl;
+    ss << "for (i = num_axes - 1; i >= 0; --i) {" << std::endl;
+    ss << "final_offset += d_iter[i] * size_prod;" << std::endl;
+    ss << "size_prod *= size[i];" << std::endl;
+    ss << "}" << std::endl;
+    ss << "if (bottom_data[final_offset + offset] > maxval) {" << std::endl;
+    ss << "maxidx = final_offset;" << std::endl;
+    ss << "maxval = bottom_data[offset + final_offset];" << std::endl;
+    ss << "}" << std::endl;
+    ss << "incremented = false;" << std::endl;
+    ss << "for (i = num_axes - 1; i >= 0; --i) {" << std::endl;
+    ss << "if (d_iter[i] >= d_end[i] - dilation[i]) {" << std::endl;
+    ss << "d_iter[i] = d_start[i];" << std::endl;
+    ss << "} else {" << std::endl;
+    ss << "d_iter[i] += dilation[i];" << std::endl;
+    ss << "incremented = true;" << std::endl;
+    ss << "break;" << std::endl;
+    ss << "}" << std::endl;
+    ss << "}" << std::endl;
+    ss << "} while (incremented);" << std::endl;
+    ss << "top_data[index] = maxval;" << std::endl;
+    ss << "if (mask) {" << std::endl;
+    ss << "mask[index] = maxidx;" << std::endl;
+    ss << "} else {" << std::endl;
+    ss << "top_mask[index] = maxidx;" << std::endl;
+    ss << "}" << std::endl;
+    ss << "}" << std::endl;
+    ss << "}" << std::endl;
+  }
+
+  {
+    KernelArgs args;
+    args.push_back(this->device_program_->template create_kernel_arg<uint_tp>(
+                      "n", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "num_axes", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<Dtype>(
+                      "top_diff", KERNEL_ARG_CONST | KERNEL_ARG_GLOBAL_MEM));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "mask", KERNEL_ARG_CONST | KERNEL_ARG_GLOBAL_MEM));
+    args.push_back(this->device_program_->template create_kernel_arg<Dtype>(
+                      "top_mask", KERNEL_ARG_CONST | KERNEL_ARG_GLOBAL_MEM));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "channels", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "size", KERNEL_ARG_CONST | KERNEL_ARG_GLOBAL_MEM));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "pooled_size", KERNEL_ARG_CONST | KERNEL_ARG_GLOBAL_MEM));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "kernel_size", KERNEL_ARG_CONST | KERNEL_ARG_GLOBAL_MEM));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "ext_kernel_size", KERNEL_ARG_CONST |
+                                         KERNEL_ARG_GLOBAL_MEM));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "stride", KERNEL_ARG_CONST | KERNEL_ARG_GLOBAL_MEM));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "dilation", KERNEL_ARG_CONST | KERNEL_ARG_GLOBAL_MEM));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "pad", KERNEL_ARG_CONST | KERNEL_ARG_GLOBAL_MEM));
+    args.push_back(this->device_program_->template create_kernel_arg<Dtype>(
+                      "bottom_diff", KERNEL_ARG_GLOBAL_MEM));
+    ss << this->device_program_->function("MaxPoolBackwardND", args);
+    ss << "int_tp d_idx[6];" << std::endl;
+    ss << "int_tp d_start[6];" << std::endl;
+    ss << "int_tp d_end[6];" << std::endl;
+    ss << "int_tp d_iter[6];" << std::endl;
+    ss << "int_tp i;" << std::endl;
+
+    ss << this->device_program_->kernel_loop("uint_tp", "index", "n");
+    // find out the local index
+    // find out the local offset
+    ss << "int_tp offset = 1;" << std::endl;
+    ss << "int_tp num = index;" << std::endl;
+    ss << "for (i = num_axes - 1; i >= 0; --i) {" << std::endl;
+    ss << "d_idx[i] = num % size[i];" << std::endl;
+    ss << "d_start[i] ="
+       << " (d_idx[i] + pad[i] < ext_kernel_size[i]) ?"
+       << " 0L : (d_idx[i] + pad[i] - ext_kernel_size[i]) / stride[i] + 1L;"
+       << std::endl;
+    ss << "d_end[i] = min((int_tpc) ((d_idx[i] + pad[i]) / stride[i]),"
+       << " (int_tpc) (pooled_size[i] - 1L));" << std::endl;
+    ss << "num /= size[i];" << std::endl;
+    ss << "offset *= pooled_size[i];" << std::endl;
+    ss << "d_iter[i] = d_start[i];" << std::endl;
+    ss << "if (d_start[i] > d_end[i]) {" << std::endl;
+    ss << "bottom_diff[index] = 0;" << std::endl;
+    ss << "return;" << std::endl;
+    ss << "}" << std::endl;
+    ss << "}" << std::endl;
+    ss << "int_tp chan = num % channels;" << std::endl;
+    ss << "num /= channels;" << std::endl;
+    ss << "offset *= (num * channels + chan);" << std::endl;
+    ss << "Dtype gradient = 0.0;" << std::endl;
+    ss << "int_tp final_offset = 0;" << std::endl;
+    ss << "int_tp im_offset = 0;" << std::endl;
+    ss << "bool incremented;" << std::endl;
+    ss << "do {" << std::endl;
+    ss << "final_offset = offset;" << std::endl;
+    ss << "im_offset = 0;" << std::endl;
+    ss << "int_tp size_prod = 1;" << std::endl;
+    ss << "int_tp pooled_size_prod = 1;" << std::endl;
+    ss << "for (i = num_axes - 1; i >= 0; --i) {" << std::endl;
+    ss << "final_offset += d_iter[i] * pooled_size_prod;" << std::endl;
+    ss << "im_offset += d_idx[i] * size_prod;" << std::endl;
+    ss << "size_prod *= size[i];" << std::endl;
+    ss << "pooled_size_prod *= pooled_size[i];" << std::endl;
+    ss << "}" << std::endl;
+    ss << "if (mask) {" << std::endl;
+    ss << "if (mask[final_offset] == im_offset) {" << std::endl;
+    ss << "gradient += top_diff[final_offset];" << std::endl;
+    ss << "}" << std::endl;
+    ss << "} else {" << std::endl;
+    ss << "if (top_mask[final_offset] == (Dtype)im_offset) {" << std::endl;
+    ss << "gradient += top_diff[final_offset];" << std::endl;
+    ss << "}" << std::endl;
+    ss << "}" << std::endl;
+    ss << "incremented = false;" << std::endl;
+    ss << "for (i = num_axes - 1; i >= 0; --i) {" << std::endl;
+    ss << "if (d_iter[i] >= d_end[i]) {" << std::endl;
+    ss << "d_iter[i] = d_start[i];" << std::endl;
+    ss << "} else {" << std::endl;
+    ss << "++d_iter[i];" << std::endl;
+    ss << "incremented = true;" << std::endl;
+    ss << "break;" << std::endl;
+    ss << "}" << std::endl;
+    ss << "}" << std::endl;
+    ss << "} while (incremented);" << std::endl;
+    ss << "bottom_diff[index] = gradient;" << std::endl;
+    ss << "}" << std::endl;
+    ss << "}" << std::endl;
+  }
+
+  this->device_program_->set_source(ss.str());
+  this->device_program_->Compile(true, true);
+}
+
+
+
+template<typename Dtype, typename MItype, typename MOtype>
+void PoolingLayer<Dtype, MItype, MOtype>::Forward_gpu(
+    const vector<Blob<MItype>*>& bottom,
+    const vector<Blob<MOtype>*>& top) {
+  vptr<const Dtype> bottom_data = bottom[0]->gpu_data();
+  vptr<Dtype> top_data = top[0]->mutable_gpu_data();
+  uint_tp count = top[0]->count();
   // We'll output the mask to top[1] if it's of size >1.
   const bool use_top_mask = top.size() > 1;
-  int_tp* mask = NULL;
-  Dtype* top_mask = NULL;
+  vptr<int_tp> mask;
+  vptr<Dtype> top_mask;
 
-  if (this->device_->backend() == BACKEND_CUDA) {
-#ifdef USE_CUDA
+  if (num_spatial_axes_ == 2) {
+    int_tp kernel_h = kernel_shape_.cpu_data()[0];
+    int_tp kernel_w = kernel_shape_.cpu_data()[1];
+    int_tp stride_h = stride_.cpu_data()[0];
+    int_tp stride_w = stride_.cpu_data()[1];
+    int_tp pad_h = pad_.cpu_data()[0];
+    int_tp pad_w = pad_.cpu_data()[1];
+    int_tp dilation_h = dilation_.cpu_data()[0];
+    int_tp dilation_w = dilation_.cpu_data()[1];
+    int_tp num = bottom[0]->shape(0);
+    int_tp height = size_.cpu_data()[0];
+    int_tp width = size_.cpu_data()[1];
+    int_tp pooled_height = pooled_size_.cpu_data()[0];
+    int_tp pooled_width = pooled_size_.cpu_data()[1];
+    int_tp ext_kernel_h = ext_kernel_shape_.cpu_data()[0];
+    int_tp ext_kernel_w = ext_kernel_shape_.cpu_data()[1];
 
-    if (num_spatial_axes_ == 2) {
-      int_tp kernel_h_ = kernel_shape_.cpu_data()[0];
-      int_tp kernel_w_ = kernel_shape_.cpu_data()[1];
-      int_tp stride_h_ = stride_.cpu_data()[0];
-      int_tp stride_w_ = stride_.cpu_data()[1];
-      int_tp pad_h_ = pad_.cpu_data()[0];
-      int_tp pad_w_ = pad_.cpu_data()[1];
-      int_tp dilation_h_ = dilation_.cpu_data()[0];
-      int_tp dilation_w_ = dilation_.cpu_data()[1];
-      int_tp height_ = size_.cpu_data()[0];
-      int_tp width_ = size_.cpu_data()[1];
-      int_tp pooled_height_ = pooled_size_.cpu_data()[0];
-      int_tp pooled_width_ = pooled_size_.cpu_data()[1];
-      int_tp ext_kernel_h = ext_kernel_shape_.cpu_data()[0];
-      int_tp ext_kernel_w = ext_kernel_shape_.cpu_data()[1];
-
-      // 2D case
-      if (use_skernel_) {
-        // 2D-SK case
-        switch (this->layer_param_.pooling_param().pool()) {
-          case PoolingParameter_PoolMethod_MAX:
-            if (use_top_mask) {
-              top_mask = top[1]->mutable_gpu_data();
-            } else {
-              mask = max_idx_.mutable_gpu_data();
-            }
-            // NOLINT_NEXT_LINE(whitespace/operators)
-            MaxPoolForward<Dtype> CUDA_KERNEL(CAFFE_GET_BLOCKS(count),
-                CAFFE_CUDA_NUM_THREADS)(
-                count, bottom_data, bottom[0]->shape(0), channels_,
-                height_, width_, pooled_height_, pooled_width_, kernel_h_,
-                kernel_w_, ext_kernel_h, ext_kernel_w,
-                stride_h_, stride_w_, dilation_h_, dilation_w_,
-                pad_h_, pad_w_, top_data,
-                mask, top_mask);
-            break;
-          case PoolingParameter_PoolMethod_AVE:
-            // NOLINT_NEXT_LINE(whitespace/operators)
-            AvePoolForward<Dtype> CUDA_KERNEL(CAFFE_GET_BLOCKS(count),
-                CAFFE_CUDA_NUM_THREADS)(
-                count, bottom_data, bottom[0]->shape(0), channels_,
-                height_, width_, pooled_height_, pooled_width_, kernel_h_,
-                kernel_w_, ext_kernel_h, ext_kernel_w,
-                stride_h_, stride_w_, dilation_h_, dilation_w_,
-                pad_h_, pad_w_, top_data);
-            break;
-          case PoolingParameter_PoolMethod_STOCHASTIC:
-            if (this->phase_ == caffe::TRAIN) {
-              // We need to create the random index as well.
-              caffe_gpu_rng_uniform(count, Dtype(0), Dtype(1),
-                                    rand_idx_.mutable_gpu_data());
-              // NOLINT_NEXT_LINE(whitespace/operators)
-              StoPoolForwardTrain<Dtype> CUDA_KERNEL(CAFFE_GET_BLOCKS(count),
-                  CAFFE_CUDA_NUM_THREADS)(
-                  count, bottom_data, bottom[0]->shape(0), channels_,
-                  height_, width_, pooled_height_, pooled_width_, kernel_h_,
-                  kernel_w_, ext_kernel_h, ext_kernel_w,
-                  stride_h_, stride_w_, dilation_h_, dilation_w_,
-                  rand_idx_.mutable_gpu_data(), top_data);
-            } else {
-              // NOLINT_NEXT_LINE(whitespace/operators)
-              StoPoolForwardTest<Dtype> CUDA_KERNEL(CAFFE_GET_BLOCKS(count),
-                  CAFFE_CUDA_NUM_THREADS)(
-                  count, bottom_data, bottom[0]->shape(0), channels_,
-                  height_, width_, pooled_height_, pooled_width_, kernel_h_,
-                  kernel_w_, ext_kernel_h, ext_kernel_w,
-                  stride_h_, stride_w_, dilation_h_, dilation_w_, top_data);
-            }
-            break;
-          default: {
-            LOG(FATAL)<< "Unknown pooling method.";
-          }
-        }
-        CUDA_POST_KERNEL_CHECK;
-      } else {
-        // 2D case
-        switch (this->layer_param_.pooling_param().pool()) {
-          case PoolingParameter_PoolMethod_MAX:
-          if (use_top_mask) {
-            top_mask = top[1]->mutable_gpu_data();
-          } else {
-            mask = max_idx_.mutable_gpu_data();
-          }
-          // NOLINT_NEXT_LINE(whitespace/operators)
-          MaxPoolForward<Dtype> CUDA_KERNEL(CAFFE_GET_BLOCKS(count),
-              CAFFE_CUDA_NUM_THREADS)(
-              count, bottom_data, bottom[0]->shape(0), channels_,
-              height_, width_, pooled_height_, pooled_width_, kernel_h_,
-              kernel_w_, stride_h_, stride_w_, pad_h_, pad_w_, top_data,
-              mask, top_mask);
-          break;
-          case PoolingParameter_PoolMethod_AVE:
-          // NOLINT_NEXT_LINE(whitespace/operators)
-          AvePoolForward<Dtype> CUDA_KERNEL(CAFFE_GET_BLOCKS(count),
-              CAFFE_CUDA_NUM_THREADS)(
-              count, bottom_data, bottom[0]->shape(0), channels_,
-              height_, width_, pooled_height_, pooled_width_, kernel_h_,
-              kernel_w_, stride_h_, stride_w_, pad_h_, pad_w_, top_data);
-          break;
-          case PoolingParameter_PoolMethod_STOCHASTIC:
-          if (this->phase_ == TRAIN) {
-            // We need to create the random index as well.
-            caffe_gpu_rng_uniform(count, Dtype(0), Dtype(1),
-                rand_idx_.mutable_gpu_data());
-            // NOLINT_NEXT_LINE(whitespace/operators)
-            StoPoolForwardTrain<Dtype> CUDA_KERNEL(CAFFE_GET_BLOCKS(count),
-                CAFFE_CUDA_NUM_THREADS)(
-                count, bottom_data, bottom[0]->shape(0), channels_,
-                height_, width_, pooled_height_, pooled_width_, kernel_h_,
-                kernel_w_, stride_h_, stride_w_,
-                rand_idx_.mutable_gpu_data(), top_data);
-          } else {
-            // NOLINT_NEXT_LINE(whitespace/operators)
-            StoPoolForwardTest<Dtype> CUDA_KERNEL(CAFFE_GET_BLOCKS(count),
-                CAFFE_CUDA_NUM_THREADS)(
-                count, bottom_data, bottom[0]->shape(0), channels_,
-                height_, width_, pooled_height_, pooled_width_, kernel_h_,
-                kernel_w_, stride_h_, stride_w_, top_data);
-          }
-          break;
-          default: {
-            LOG(FATAL)<< "Unknown pooling method.";
-          }
-        }
-        CUDA_POST_KERNEL_CHECK;
-      }
-    } else {
-      switch (this->layer_param_.pooling_param().pool()) {
-        case PoolingParameter_PoolMethod_MAX:
-        if (use_top_mask) {
-          top_mask = top[1]->mutable_gpu_data();
-        } else {
-          mask = max_idx_.mutable_gpu_data();
-        }
-        // NOLINT_NEXT_LINE(whitespace/operators)
-        MaxPoolNDForward<Dtype> CUDA_KERNEL(CAFFE_GET_BLOCKS(count),
-            CAFFE_CUDA_NUM_THREADS)(
-            count, num_spatial_axes_, bottom_data,
-            channels_, size_.gpu_data(), pooled_size_.gpu_data(),
-            kernel_shape_.gpu_data(), ext_kernel_shape_.gpu_data(),
-            stride_.gpu_data(), dilation_.gpu_data(), pad_.gpu_data(),
-            top_data, mask, top_mask);
-        break;
-        default: {
-          LOG(FATAL)<< "Unknown pooling method.";
-        }
-      }
-    }
-    CUDA_POST_KERNEL_CHECK;
-
-#endif  // USE_CUDA
-  } else {
-#ifdef USE_GREENTEA
-    viennacl::ocl::context &ctx = viennacl::ocl::get_context(
-        this->device_->id());
-    viennacl::ocl::program &program = this->device_->program();
-
-    if (num_spatial_axes_ == 2) {
-      int_tp kernel_h_ = kernel_shape_.cpu_data()[0];
-      int_tp kernel_w_ = kernel_shape_.cpu_data()[1];
-      int_tp stride_h_ = stride_.cpu_data()[0];
-      int_tp stride_w_ = stride_.cpu_data()[1];
-      int_tp pad_h_ = pad_.cpu_data()[0];
-      int_tp pad_w_ = pad_.cpu_data()[1];
-      int_tp dilation_h_ = dilation_.cpu_data()[0];
-      int_tp dilation_w_ = dilation_.cpu_data()[1];
-      int_tp height_ = size_.cpu_data()[0];
-      int_tp width_ = size_.cpu_data()[1];
-      int_tp pooled_height_ = pooled_size_.cpu_data()[0];
-      int_tp pooled_width_ = pooled_size_.cpu_data()[1];
-      int_tp ext_kernel_h = ext_kernel_shape_.cpu_data()[0];
-      int_tp ext_kernel_w = ext_kernel_shape_.cpu_data()[1];
-
-      // 2D case
-      if (use_skernel_) {
-        // 2D-SK case
-        switch (this->layer_param_.pooling_param().pool()) {
-          case PoolingParameter_PoolMethod_MAX: {
-            if (use_top_mask) {
-              top_mask = top[1]->mutable_gpu_data();
-            } else {
-              mask = max_idx_.mutable_gpu_data();
-            }
-            viennacl::ocl::kernel &oclk_max_pool_forward = program.get_kernel(
-                CL_KERNEL_SELECT("max_pool_forward_sk"));
-            viennacl::ocl::enqueue(
-                oclk_max_pool_forward(count,
-                    WrapHandle((cl_mem) bottom_data, &ctx),
-                    bottom[0]->shape(0), channels_, height_, width_,
-                    pooled_height_, pooled_width_, kernel_h_,
-                    kernel_w_, ext_kernel_h, ext_kernel_w,
-                    stride_h_, stride_w_, dilation_h_, dilation_w_,
-                    pad_h_, pad_w_,
-                    WrapHandle((cl_mem) top_data, &ctx),
-                    mask == NULL ? 0 : 1,
-                    WrapHandle((cl_mem) mask, &ctx),
-                    WrapHandle((cl_mem) top_mask, &ctx)),
-                ctx.get_queue());
-          }
-          break;
-          case PoolingParameter_PoolMethod_AVE: {
-            viennacl::ocl::kernel &oclk_ave_pool_forward = program.get_kernel(
-                CL_KERNEL_SELECT("ave_pool_forward_sk"));
-            viennacl::ocl::enqueue(
-                oclk_ave_pool_forward(count,
-                    WrapHandle((cl_mem) bottom_data, &ctx),
-                    bottom[0]->shape(0), channels_,
-                    height_, width_, pooled_height_, pooled_width_, kernel_h_,
-                    kernel_w_, ext_kernel_h, ext_kernel_w,
-                    stride_h_, stride_w_, dilation_h_, dilation_w_,
-                    pad_h_, pad_w_, WrapHandle((cl_mem)top_data, &ctx)),
-                ctx.get_queue());
-          }
-          break;
-          case PoolingParameter_PoolMethod_STOCHASTIC: {
-            if (this->phase_ == caffe::TRAIN) {
-              // We need to create the random index as well.
-              greentea_gpu_rng_uniform(this->device_->id(), count,
-                  Dtype(0), Dtype(1),
-                  (cl_mem)(rand_idx_.mutable_gpu_data()), 0);
-
-              viennacl::ocl::kernel &oclk_sto_pool_forward = program.get_kernel(
-                  CL_KERNEL_SELECT("sto_pool_forward_train_sk"));
-              viennacl::ocl::enqueue(
-                  oclk_sto_pool_forward(count,
-                      WrapHandle((cl_mem)bottom_data, &ctx),
-                      bottom[0]->shape(0), channels_,
-                      height_, width_, pooled_height_, pooled_width_, kernel_h_,
-                      kernel_w_, ext_kernel_h, ext_kernel_w,
-                      stride_h_, stride_w_, dilation_h_, dilation_w_,
-                      WrapHandle((cl_mem)(rand_idx_.mutable_gpu_data()), &ctx),
-                      WrapHandle((cl_mem)(top_data), &ctx)),
-                  ctx.get_queue());
-            } else {
-              viennacl::ocl::kernel &oclk_sto_pool_forward = program.get_kernel(
-                  CL_KERNEL_SELECT("sto_pool_forward_test_sk"));
-              viennacl::ocl::enqueue(
-                  oclk_sto_pool_forward(count,
-                      WrapHandle((cl_mem)bottom_data, &ctx),
-                      bottom[0]->shape(0), channels_,
-                      height_, width_, pooled_height_, pooled_width_, kernel_h_,
-                      kernel_w_, ext_kernel_h, ext_kernel_w,
-                      stride_h_, stride_w_, dilation_h_, dilation_w_,
-                      WrapHandle((cl_mem)top_data, &ctx)),
-                  ctx.get_queue());
-            }
-          }
-          break;
-          default: {
-            LOG(FATAL)<< "Unknown pooling method.";
-          }
-        }
-      } else {
-        // 2D case
-        switch (this->layer_param_.pooling_param().pool()) {
-          case PoolingParameter_PoolMethod_MAX: {
-            if (use_top_mask) {
-              top_mask = top[1]->mutable_gpu_data();
-            } else {
-              mask = max_idx_.mutable_gpu_data();
-            }
-            viennacl::ocl::kernel &oclk_max_pool_forward = program.get_kernel(
-                CL_KERNEL_SELECT("max_pool_forward"));
-            viennacl::ocl::enqueue(
-                oclk_max_pool_forward(count,
-                    WrapHandle((cl_mem) bottom_data, &ctx),
-                    bottom[0]->shape(0), channels_, height_, width_,
-                    pooled_height_, pooled_width_, kernel_h_,
-                    kernel_w_, stride_h_, stride_w_, pad_h_, pad_w_,
-                    WrapHandle((cl_mem) top_data, &ctx),
-                    mask == NULL ? 0 : 1,
-                    WrapHandle((cl_mem) mask, &ctx),
-                    WrapHandle((cl_mem) top_mask, &ctx)),
-                ctx.get_queue());
-          }
-          break;
-          case PoolingParameter_PoolMethod_AVE: {
-            viennacl::ocl::kernel &oclk_ave_pool_forward = program.get_kernel(
-                CL_KERNEL_SELECT("ave_pool_forward"));
-            viennacl::ocl::enqueue(
-                oclk_ave_pool_forward(count,
-                    WrapHandle((cl_mem) bottom_data, &ctx),
-                    bottom[0]->shape(0), channels_,
-                    height_, width_, pooled_height_, pooled_width_, kernel_h_,
-                    kernel_w_, stride_h_, stride_w_, pad_h_, pad_w_,
-                    WrapHandle((cl_mem)top_data, &ctx)),
-                ctx.get_queue());
-          }
-          break;
-          case PoolingParameter_PoolMethod_STOCHASTIC: {
-            if (this->phase_ == caffe::TRAIN) {
-              // We need to create the random index as well.
-              greentea_gpu_rng_uniform(this->device_->id(), count,
-                  Dtype(0), Dtype(1),
-                  (cl_mem)(rand_idx_.mutable_gpu_data()), 0);
-
-              viennacl::ocl::kernel &oclk_sto_pool_forward = program.get_kernel(
-                  CL_KERNEL_SELECT("sto_pool_forward_train"));
-              viennacl::ocl::enqueue(
-                  oclk_sto_pool_forward(count,
-                      WrapHandle((cl_mem)bottom_data, &ctx),
-                      bottom[0]->shape(0), channels_,
-                      height_, width_, pooled_height_, pooled_width_,
-                      kernel_h_, kernel_w_,
-                      stride_h_, stride_w_,
-                      WrapHandle((cl_mem)(rand_idx_.mutable_gpu_data()), &ctx),
-                      WrapHandle((cl_mem)top_data, &ctx)),
-                  ctx.get_queue());
-            } else {
-              viennacl::ocl::kernel &oclk_sto_pool_forward = program.get_kernel(
-                  CL_KERNEL_SELECT("sto_pool_forward_test"));
-              viennacl::ocl::enqueue(
-                  oclk_sto_pool_forward(count,
-                      WrapHandle((cl_mem)bottom_data, &ctx),
-                      bottom[0]->shape(0), channels_,
-                      height_, width_, pooled_height_,
-                      pooled_width_, kernel_h_, kernel_w_,
-                      stride_h_, stride_w_, WrapHandle((cl_mem)top_data, &ctx)),
-                  ctx.get_queue());
-            }
-          }
-          break;
-          default: {
-            LOG(FATAL)<< "Unknown pooling method.";
-          }
-        }
-      }
-    } else {
+    // 2D case
+    if (use_skernel_) {
+      // 2D-SK case
       switch (this->layer_param_.pooling_param().pool()) {
         case PoolingParameter_PoolMethod_MAX: {
           if (use_top_mask) {
@@ -1120,332 +1263,610 @@ void PoolingLayer<Dtype>::Forward_gpu(const vector<Blob<Dtype>*>& bottom,
           } else {
             mask = max_idx_.mutable_gpu_data();
           }
-          viennacl::ocl::kernel &oclk_max_pool_forward = program.get_kernel(
-              CL_KERNEL_SELECT("max_pool_forward_nd"));
-          viennacl::ocl::enqueue(
-              oclk_max_pool_forward(count, num_spatial_axes_,
-                  WrapHandle((cl_mem)bottom_data, &ctx),
-                  channels_,
-                  WrapHandle((cl_mem)(size_.gpu_data()), &ctx),
-                  WrapHandle((cl_mem)(pooled_size_.gpu_data()), &ctx),
-                  WrapHandle((cl_mem)(kernel_shape_.gpu_data()), &ctx),
-                  WrapHandle((cl_mem)(ext_kernel_shape_.gpu_data()), &ctx),
-                  WrapHandle((cl_mem)(stride_.gpu_data()), &ctx),
-                  WrapHandle((cl_mem)(dilation_.gpu_data()), &ctx),
-                  WrapHandle((cl_mem)(pad_.gpu_data()), &ctx),
-                  WrapHandle((cl_mem)top_data, &ctx),
-                  mask == NULL ? 0 : 1,
-                  WrapHandle((cl_mem)mask, &ctx),
-                  WrapHandle((cl_mem)top_mask, &ctx)),
-              ctx.get_queue());
+
+          shared_ptr<DeviceKernel> kernel =
+                           this->device_program_->GetKernel("MaxPoolForwardSK");
+          kernel->add_arg(&count);
+          kernel->add_arg(&bottom_data);
+          kernel->add_arg(&num);
+          kernel->add_arg(&channels_);
+          kernel->add_arg(&height);
+          kernel->add_arg(&width);
+          kernel->add_arg(&pooled_height);
+          kernel->add_arg(&pooled_width);
+          kernel->add_arg(&kernel_h);
+          kernel->add_arg(&kernel_w);
+          kernel->add_arg(&ext_kernel_h);
+          kernel->add_arg(&ext_kernel_w);
+          kernel->add_arg(&stride_h);
+          kernel->add_arg(&stride_w);
+          kernel->add_arg(&dilation_h);
+          kernel->add_arg(&dilation_w);
+          kernel->add_arg(&pad_h);
+          kernel->add_arg(&pad_w);
+          kernel->add_arg(&top_data);
+          kernel->add_arg(&mask);
+          kernel->add_arg(&top_mask);
+
+          vector<size_t> work_size(1, count);
+          vector<size_t> group;
+          vector<size_t> local;
+          this->device_->get_threads(&work_size, &group, &local, kernel.get(),
+                                     true);
+          kernel->Execute(group, local);
+          break;
         }
-        break;
+        case PoolingParameter_PoolMethod_AVE: {
+          shared_ptr<DeviceKernel> kernel =
+                          this->device_program_->GetKernel("AvePoolForwardSK");
+          kernel->add_arg(&count);
+          kernel->add_arg(&bottom_data);
+          kernel->add_arg(&num);
+          kernel->add_arg(&channels_);
+          kernel->add_arg(&height);
+          kernel->add_arg(&width);
+          kernel->add_arg(&pooled_height);
+          kernel->add_arg(&pooled_width);
+          kernel->add_arg(&kernel_h);
+          kernel->add_arg(&kernel_w);
+          kernel->add_arg(&ext_kernel_h);
+          kernel->add_arg(&ext_kernel_w);
+          kernel->add_arg(&stride_h);
+          kernel->add_arg(&stride_w);
+          kernel->add_arg(&dilation_h);
+          kernel->add_arg(&dilation_w);
+          kernel->add_arg(&pad_h);
+          kernel->add_arg(&pad_w);
+          kernel->add_arg(&top_data);
+
+          vector<size_t> work_size(1, count);
+          vector<size_t> group;
+          vector<size_t> local;
+          this->device_->get_threads(&work_size, &group, &local, kernel.get(),
+                                     true);
+          kernel->Execute(group, local);
+          break;
+        }
+        case PoolingParameter_PoolMethod_STOCHASTIC: {
+          if (this->phase_ == caffe::TRAIN) {
+            // We need to create the random index as well.
+            this->device_->template rng_uniform<Dtype>(count, Dtype(0),
+                           Dtype(1), rand_idx_.mutable_gpu_data());
+
+            shared_ptr<DeviceKernel> kernel =
+                      this->device_program_->GetKernel("StoPoolForwardTrainSK");
+            kernel->add_arg(&count);
+            kernel->add_arg(&bottom_data);
+            kernel->add_arg(&num);
+            kernel->add_arg(&channels_);
+            kernel->add_arg(&height);
+            kernel->add_arg(&width);
+            kernel->add_arg(&pooled_height);
+            kernel->add_arg(&pooled_width);
+            kernel->add_arg(&kernel_h);
+            kernel->add_arg(&kernel_w);
+            kernel->add_arg(&ext_kernel_h);
+            kernel->add_arg(&ext_kernel_w);
+            kernel->add_arg(&stride_h);
+            kernel->add_arg(&stride_w);
+            kernel->add_arg(&dilation_h);
+            kernel->add_arg(&dilation_w);
+            kernel->add_arg(&top_data);
+
+            vector<size_t> work_size(1, count);
+            vector<size_t> group;
+            vector<size_t> local;
+            this->device_->get_threads(&work_size, &group, &local, kernel.get(),
+                                       true);
+            kernel->Execute(group, local);
+          } else {
+            shared_ptr<DeviceKernel> kernel =
+                       this->device_program_->GetKernel("StoPoolForwardTestSK");
+            kernel->add_arg(&count);
+            kernel->add_arg(&bottom_data);
+            kernel->add_arg(&num);
+            kernel->add_arg(&channels_);
+            kernel->add_arg(&height);
+            kernel->add_arg(&width);
+            kernel->add_arg(&pooled_height);
+            kernel->add_arg(&pooled_width);
+            kernel->add_arg(&kernel_h);
+            kernel->add_arg(&kernel_w);
+            kernel->add_arg(&ext_kernel_h);
+            kernel->add_arg(&ext_kernel_w);
+            kernel->add_arg(&stride_h);
+            kernel->add_arg(&stride_w);
+            kernel->add_arg(&dilation_h);
+            kernel->add_arg(&dilation_w);
+            kernel->add_arg(&top_data);
+
+            vector<size_t> work_size(1, count);
+            vector<size_t> group;
+            vector<size_t> local;
+            this->device_->get_threads(&work_size, &group, &local, kernel.get(),
+                                       true);
+            kernel->Execute(group, local);
+          }
+          break;
+        }
+        default: {
+          LOG(FATAL)<< "Unknown pooling method.";
+        }
+      }
+    } else {
+      // 2D case
+      switch (this->layer_param_.pooling_param().pool()) {
+        case PoolingParameter_PoolMethod_MAX: {
+          if (use_top_mask) {
+            top_mask = top[1]->mutable_gpu_data();
+          } else {
+            mask = max_idx_.mutable_gpu_data();
+          }
+
+          shared_ptr<DeviceKernel> kernel =
+                             this->device_program_->GetKernel("MaxPoolForward");
+          kernel->add_arg(&count);
+          kernel->add_arg(&bottom_data);
+          kernel->add_arg(&num);
+          kernel->add_arg(&channels_);
+          kernel->add_arg(&height);
+          kernel->add_arg(&width);
+          kernel->add_arg(&pooled_height);
+          kernel->add_arg(&pooled_width);
+          kernel->add_arg(&kernel_h);
+          kernel->add_arg(&kernel_w);
+          kernel->add_arg(&stride_h);
+          kernel->add_arg(&stride_w);
+          kernel->add_arg(&pad_h);
+          kernel->add_arg(&pad_w);
+          kernel->add_arg(&top_data);
+          kernel->add_arg(&mask);
+          kernel->add_arg(&top_mask);
+
+          vector<size_t> work_size(1, count);
+          vector<size_t> group;
+          vector<size_t> local;
+          this->device_->get_threads(&work_size, &group, &local, kernel.get(),
+                                     true);
+          kernel->Execute(group, local);
+          break;
+        }
+        case PoolingParameter_PoolMethod_AVE: {
+          shared_ptr<DeviceKernel> kernel =
+                             this->device_program_->GetKernel("AvePoolForward");
+          kernel->add_arg(&count);
+          kernel->add_arg(&bottom_data);
+          kernel->add_arg(&num);
+          kernel->add_arg(&channels_);
+          kernel->add_arg(&height);
+          kernel->add_arg(&width);
+          kernel->add_arg(&pooled_height);
+          kernel->add_arg(&pooled_width);
+          kernel->add_arg(&kernel_h);
+          kernel->add_arg(&kernel_w);
+          kernel->add_arg(&stride_h);
+          kernel->add_arg(&stride_w);
+          kernel->add_arg(&pad_h);
+          kernel->add_arg(&pad_w);
+          kernel->add_arg(&top_data);
+
+          vector<size_t> work_size(1, count);
+          vector<size_t> group;
+          vector<size_t> local;
+          this->device_->get_threads(&work_size, &group, &local, kernel.get(),
+                                     true);
+          kernel->Execute(group, local);
+          break;
+        }
+        case PoolingParameter_PoolMethod_STOCHASTIC: {
+          if (this->phase_ == TRAIN) {
+            // We need to create the random index as well.
+            this->device_->template rng_uniform<Dtype>(count, Dtype(0),
+                           Dtype(1), rand_idx_.mutable_gpu_data());
+
+            vptr<Dtype> rand_idx_data = rand_idx_.mutable_gpu_data();
+
+            shared_ptr<DeviceKernel> kernel =
+                        this->device_program_->GetKernel("StoPoolForwardTrain");
+            kernel->add_arg(&count);
+            kernel->add_arg(&bottom_data);
+            kernel->add_arg(&num);
+            kernel->add_arg(&channels_);
+            kernel->add_arg(&height);
+            kernel->add_arg(&width);
+            kernel->add_arg(&pooled_height);
+            kernel->add_arg(&pooled_width);
+            kernel->add_arg(&kernel_h);
+            kernel->add_arg(&kernel_w);
+            kernel->add_arg(&stride_h);
+            kernel->add_arg(&stride_w);
+            kernel->add_arg(&rand_idx_data);
+            kernel->add_arg(&top_data);
+
+            vector<size_t> work_size(1, count);
+            vector<size_t> group;
+            vector<size_t> local;
+            this->device_->get_threads(&work_size, &group, &local, kernel.get(),
+                                       true);
+            kernel->Execute(group, local);
+          } else {
+            shared_ptr<DeviceKernel> kernel =
+                         this->device_program_->GetKernel("StoPoolForwardTest");
+            kernel->add_arg(&count);
+            kernel->add_arg(&bottom_data);
+            kernel->add_arg(&num);
+            kernel->add_arg(&channels_);
+            kernel->add_arg(&height);
+            kernel->add_arg(&width);
+            kernel->add_arg(&pooled_height);
+            kernel->add_arg(&pooled_width);
+            kernel->add_arg(&kernel_h);
+            kernel->add_arg(&kernel_w);
+            kernel->add_arg(&stride_h);
+            kernel->add_arg(&stride_w);
+            kernel->add_arg(&top_data);
+
+            vector<size_t> work_size(1, count);
+            vector<size_t> group;
+            vector<size_t> local;
+            this->device_->get_threads(&work_size, &group, &local, kernel.get(),
+                                       true);
+            kernel->Execute(group, local);
+          }
+          break;
+        }
         default: {
           LOG(FATAL)<< "Unknown pooling method.";
         }
       }
     }
+  } else {
+    switch (this->layer_param_.pooling_param().pool()) {
+      case PoolingParameter_PoolMethod_MAX: {
+        if (use_top_mask) {
+          top_mask = top[1]->mutable_gpu_data();
+        } else {
+          mask = max_idx_.mutable_gpu_data();
+        }
 
-#endif  // USE_GREENTEA
+        vptr<const int_tp> size_data = size_.gpu_data();
+        vptr<const int_tp> pooled_size_data = pooled_size_.gpu_data();
+        vptr<const int_tp> kernel_shape_data = kernel_shape_.gpu_data();
+        vptr<const int_tp> ext_kernel_shape_data = ext_kernel_shape_.gpu_data();
+        vptr<const int_tp> stride_data = stride_.gpu_data();
+        vptr<const int_tp> dilation_data = dilation_.gpu_data();
+        vptr<const int_tp> pad_data = pad_.gpu_data();
+
+        shared_ptr<DeviceKernel> kernel =
+                          this->device_program_->GetKernel("MaxPoolForwardND");
+        kernel->add_arg(&count);
+        kernel->add_arg(&num_spatial_axes_);
+        kernel->add_arg(&bottom_data);
+        kernel->add_arg(&channels_);
+        kernel->add_arg(&size_data);
+        kernel->add_arg(&pooled_size_data);
+        kernel->add_arg(&kernel_shape_data);
+        kernel->add_arg(&ext_kernel_shape_data);
+        kernel->add_arg(&stride_data);
+        kernel->add_arg(&dilation_data);
+        kernel->add_arg(&pad_data);
+        kernel->add_arg(&top_data);
+        kernel->add_arg(&mask);
+        kernel->add_arg(&top_mask);
+
+        vector<size_t> work_size(1, count);
+        vector<size_t> group;
+        vector<size_t> local;
+        this->device_->get_threads(&work_size, &group, &local, kernel.get(),
+                                   true);
+        kernel->Execute(group, local);
+        break;
+      }
+      default: {
+        LOG(FATAL)<< "Unknown pooling method.";
+      }
+    }
   }
 }
 
-template<typename Dtype>
-void PoolingLayer<Dtype>::Backward_gpu(const vector<Blob<Dtype>*>& top,
-                                       const vector<bool>& propagate_down,
-                                       const vector<Blob<Dtype>*>& bottom) {
-  const Dtype* top_diff = top[0]->gpu_diff();
-  Dtype* bottom_diff = bottom[0]->mutable_gpu_diff();
+template<typename Dtype, typename MItype, typename MOtype>
+void PoolingLayer<Dtype, MItype, MOtype>::Backward_gpu(
+                                        const vector<Blob<MOtype>*>& top,
+                                        const vector<bool>& propagate_down,
+                                        const vector<Blob<MItype>*>& bottom) {
+  vptr<const Dtype> top_diff = top[0]->gpu_diff();
+  vptr<Dtype> bottom_diff = bottom[0]->mutable_gpu_diff();
   const int_tp count = bottom[0]->count();
   // We'll output the mask to top[1] if it's of size >1.
   const bool use_top_mask = top.size() > 1;
-  const int_tp* mask = NULL;
-  const Dtype* top_mask = NULL;
+  vptr<const int_tp> mask;
+  vptr<const Dtype> top_mask;
 
-  if (this->device_->backend() == BACKEND_CUDA) {
-#ifdef USE_CUDA
-    caffe_gpu_set(count, Dtype(0.), bottom_diff);
+  this->device_->set(count, Dtype(0.), bottom_diff);
 
-    if (num_spatial_axes_ == 2) {
-      int_tp kernel_h_ = kernel_shape_.cpu_data()[0];
-      int_tp kernel_w_ = kernel_shape_.cpu_data()[1];
-      int_tp stride_h_ = stride_.cpu_data()[0];
-      int_tp stride_w_ = stride_.cpu_data()[1];
-      int_tp pad_h_ = pad_.cpu_data()[0];
-      int_tp pad_w_ = pad_.cpu_data()[1];
-      int_tp dilation_h_ = dilation_.cpu_data()[0];
-      int_tp dilation_w_ = dilation_.cpu_data()[1];
-      int_tp height_ = size_.cpu_data()[0];
-      int_tp width_ = size_.cpu_data()[1];
-      int_tp pooled_height_ = pooled_size_.cpu_data()[0];
-      int_tp pooled_width_ = pooled_size_.cpu_data()[1];
-      int_tp ext_kernel_h = ext_kernel_shape_.cpu_data()[0];
-      int_tp ext_kernel_w = ext_kernel_shape_.cpu_data()[1];
+  if (num_spatial_axes_ == 2) {
+    int_tp kernel_h = kernel_shape_.cpu_data()[0];
+    int_tp kernel_w = kernel_shape_.cpu_data()[1];
+    int_tp stride_h = stride_.cpu_data()[0];
+    int_tp stride_w = stride_.cpu_data()[1];
+    int_tp pad_h = pad_.cpu_data()[0];
+    int_tp pad_w = pad_.cpu_data()[1];
+    int_tp dilation_h = dilation_.cpu_data()[0];
+    int_tp dilation_w = dilation_.cpu_data()[1];
+    int_tp num = top[0]->shape(0);
+    int_tp height = size_.cpu_data()[0];
+    int_tp width = size_.cpu_data()[1];
+    int_tp pooled_height = pooled_size_.cpu_data()[0];
+    int_tp pooled_width = pooled_size_.cpu_data()[1];
+    int_tp ext_kernel_h = ext_kernel_shape_.cpu_data()[0];
+    int_tp ext_kernel_w = ext_kernel_shape_.cpu_data()[1];
 
-      if (use_skernel_) {
-        switch (this->layer_param_.pooling_param().pool()) {
-          case PoolingParameter_PoolMethod_MAX:
-            if (use_top_mask) {
-              top_mask = top[1]->gpu_data();
-            } else {
-              mask = max_idx_.gpu_data();
-            }
-            // NOLINT_NEXT_LINE(whitespace/operators)
-            MaxPoolBackward<Dtype> CUDA_KERNEL(CAFFE_GET_BLOCKS(count),
-                CAFFE_CUDA_NUM_THREADS)(
-                count, top_diff, mask, top_mask, top[0]->shape(0), channels_,
-                height_, width_, pooled_height_, pooled_width_,
-                kernel_h_, kernel_w_, ext_kernel_h, ext_kernel_w,
-                stride_h_, stride_w_, dilation_h_, dilation_w_,
-                pad_h_, pad_w_,
-                bottom_diff);
-            break;
-          case PoolingParameter_PoolMethod_AVE:
-          // NOLINT_NEXT_LINE(whitespace/operators)
-          AvePoolBackward<Dtype> CUDA_KERNEL(CAFFE_GET_BLOCKS(count),
-              CAFFE_CUDA_NUM_THREADS)(
-              count, top_diff, top[0]->shape(0), channels_,
-              height_, width_, pooled_height_, pooled_width_, kernel_h_,
-              kernel_w_, ext_kernel_h, ext_kernel_w,
-              stride_h_, stride_w_, dilation_h_, dilation_w_,
-              pad_h_, pad_w_,
-              bottom_diff);
-            break;
-          default:
-            LOG(FATAL)<<
-            "Unknown or unsupported pooling method in Backward_gpu().";
-          }
-          CUDA_POST_KERNEL_CHECK;
-        } else {
-          switch (this->layer_param_.pooling_param().pool()) {
-            case PoolingParameter_PoolMethod_MAX:
-            if (use_top_mask) {
-              top_mask = top[1]->gpu_data();
-            } else {
-              mask = max_idx_.gpu_data();
-            }
-            // NOLINT_NEXT_LINE(whitespace/operators)
-            MaxPoolBackward<Dtype> CUDA_KERNEL(CAFFE_GET_BLOCKS(count),
-                CAFFE_CUDA_NUM_THREADS)(
-                count, top_diff, mask, top_mask, top[0]->shape(0), channels_,
-                height_, width_, pooled_height_, pooled_width_,
-                kernel_h_, kernel_w_, stride_h_, stride_w_, pad_h_, pad_w_,
-                bottom_diff);
-            break;
-            case PoolingParameter_PoolMethod_AVE:
-            // NOLINT_NEXT_LINE(whitespace/operators)
-            AvePoolBackward<Dtype> CUDA_KERNEL(CAFFE_GET_BLOCKS(count),
-                CAFFE_CUDA_NUM_THREADS)(
-                count, top_diff, top[0]->shape(0), channels_,
-                height_, width_, pooled_height_, pooled_width_, kernel_h_,
-                kernel_w_, stride_h_, stride_w_, pad_h_, pad_w_, bottom_diff);
-            break;
-            case PoolingParameter_PoolMethod_STOCHASTIC:
-            // NOLINT_NEXT_LINE(whitespace/operators)
-            StoPoolBackward<Dtype> CUDA_KERNEL(CAFFE_GET_BLOCKS(count),
-                CAFFE_CUDA_NUM_THREADS)(
-                count, rand_idx_.gpu_data(), top_diff,
-                top[0]->shape(0), channels_, height_, width_, pooled_height_,
-                pooled_width_, kernel_h_, kernel_w_, stride_h_, stride_w_,
-                bottom_diff);
-            break;
-            default: {
-              LOG(FATAL)<< "Unknown pooling method.";
-            }
-          }
-          CUDA_POST_KERNEL_CHECK;
-        }
-      } else {
-        switch (this->layer_param_.pooling_param().pool()) {
-          case PoolingParameter_PoolMethod_MAX:
+    if (use_skernel_) {
+      switch (this->layer_param_.pooling_param().pool()) {
+        case PoolingParameter_PoolMethod_MAX: {
           if (use_top_mask) {
             top_mask = top[1]->gpu_data();
           } else {
             mask = max_idx_.gpu_data();
           }
-          // NOLINT_NEXT_LINE(whitespace/operators)
-          MaxPoolNDBackward<Dtype> CUDA_KERNEL(CAFFE_GET_BLOCKS(count),
-              CAFFE_CUDA_NUM_THREADS)(
-              count, num_spatial_axes_, top_diff, mask, top_mask,
-              channels_, size_.gpu_data(), pooled_size_.gpu_data(),
-              kernel_shape_.gpu_data(), ext_kernel_shape_.gpu_data(),
-              stride_.gpu_data(), dilation_.gpu_data(), pad_.gpu_data(),
-              bottom_diff);
+
+          shared_ptr<DeviceKernel> kernel =
+                          this->device_program_->GetKernel("MaxPoolBackwardSK");
+          kernel->add_arg(&count);
+          kernel->add_arg(&top_diff);
+          kernel->add_arg(&mask);
+          kernel->add_arg(&top_mask);
+          kernel->add_arg(&num);
+          kernel->add_arg(&channels_);
+          kernel->add_arg(&height);
+          kernel->add_arg(&width);
+          kernel->add_arg(&pooled_height);
+          kernel->add_arg(&pooled_width);
+          kernel->add_arg(&kernel_h);
+          kernel->add_arg(&kernel_w);
+          kernel->add_arg(&ext_kernel_h);
+          kernel->add_arg(&ext_kernel_w);
+          kernel->add_arg(&stride_h);
+          kernel->add_arg(&stride_w);
+          kernel->add_arg(&dilation_h);
+          kernel->add_arg(&dilation_w);
+          kernel->add_arg(&pad_h);
+          kernel->add_arg(&pad_w);
+          kernel->add_arg(&bottom_diff);
+
+          vector<size_t> work_size(1, count);
+          vector<size_t> group;
+          vector<size_t> local;
+          this->device_->get_threads(&work_size, &group, &local, kernel.get(),
+                                     true);
+          kernel->Execute(group, local);
           break;
-          default:
+        }
+        case PoolingParameter_PoolMethod_AVE: {
+          shared_ptr<DeviceKernel> kernel =
+                          this->device_program_->GetKernel("AvePoolBackwardSK");
+          kernel->add_arg(&count);
+          kernel->add_arg(&top_diff);
+          kernel->add_arg(&num);
+          kernel->add_arg(&channels_);
+          kernel->add_arg(&height);
+          kernel->add_arg(&width);
+          kernel->add_arg(&pooled_height);
+          kernel->add_arg(&pooled_width);
+          kernel->add_arg(&kernel_h);
+          kernel->add_arg(&kernel_w);
+          kernel->add_arg(&ext_kernel_h);
+          kernel->add_arg(&ext_kernel_w);
+          kernel->add_arg(&stride_h);
+          kernel->add_arg(&stride_w);
+          kernel->add_arg(&dilation_h);
+          kernel->add_arg(&dilation_w);
+          kernel->add_arg(&pad_h);
+          kernel->add_arg(&pad_w);
+          kernel->add_arg(&bottom_diff);
+
+          vector<size_t> work_size(1, count);
+          vector<size_t> group;
+          vector<size_t> local;
+          this->device_->get_threads(&work_size, &group, &local, kernel.get(),
+                                     true);
+          kernel->Execute(group, local);
+          break;
+        }
+        default: {
           LOG(FATAL)<<
           "Unknown or unsupported pooling method in Backward_gpu().";
         }
-        CUDA_POST_KERNEL_CHECK;
       }
-#endif  // USE_CUDA
     } else {
-#ifdef USE_GREENTEA
-      viennacl::ocl::context &ctx = viennacl::ocl::get_context(
-          this->device_->id());
-      viennacl::ocl::program &program = this->device_->program();
-
-      greentea_gpu_set(this->device_->id(), count, Dtype(0.),
-          (cl_mem) bottom_diff, 0);
-
-      if (num_spatial_axes_ == 2) {
-        int_tp kernel_h_ = kernel_shape_.cpu_data()[0];
-        int_tp kernel_w_ = kernel_shape_.cpu_data()[1];
-        int_tp stride_h_ = stride_.cpu_data()[0];
-        int_tp stride_w_ = stride_.cpu_data()[1];
-        int_tp pad_h_ = pad_.cpu_data()[0];
-        int_tp pad_w_ = pad_.cpu_data()[1];
-        int_tp dilation_h_ = dilation_.cpu_data()[0];
-        int_tp dilation_w_ = dilation_.cpu_data()[1];
-        int_tp height_ = size_.cpu_data()[0];
-        int_tp width_ = size_.cpu_data()[1];
-        int_tp pooled_height_ = pooled_size_.cpu_data()[0];
-        int_tp pooled_width_ = pooled_size_.cpu_data()[1];
-        int_tp ext_kernel_h = ext_kernel_shape_.cpu_data()[0];
-        int_tp ext_kernel_w = ext_kernel_shape_.cpu_data()[1];
-
-        if (use_skernel_) {
-          switch (this->layer_param_.pooling_param().pool()) {
-            case PoolingParameter_PoolMethod_MAX: {
-              if (use_top_mask) {
-                top_mask = top[1]->gpu_data();
-              } else {
-                mask = max_idx_.gpu_data();
-              }
-              viennacl::ocl::kernel &oclk_max_pool_backward =
-              program.get_kernel(
-                  CL_KERNEL_SELECT("max_pool_backward_sk"));
-              viennacl::ocl::enqueue(
-                  oclk_max_pool_backward(count,
-                      WrapHandle((cl_mem) top_diff, &ctx),
-                      mask == NULL ? 0 : 1,
-                      WrapHandle((cl_mem) mask, &ctx),
-                      WrapHandle((cl_mem) top_mask, &ctx),
-                      top[0]->shape(0), channels_, height_, width_,
-                      pooled_height_, pooled_width_, kernel_h_,
-                      kernel_w_, ext_kernel_h, ext_kernel_w,
-                      stride_h_, stride_w_, dilation_h_, dilation_w_,
-                      pad_h_, pad_w_,
-                      WrapHandle((cl_mem) bottom_diff, &ctx)),
-                  ctx.get_queue());
-            }
-            break;
-            case PoolingParameter_PoolMethod_AVE: {
-              viennacl::ocl::kernel &oclk_ave_pool_backward =
-              program.get_kernel(
-                 CL_KERNEL_SELECT("ave_pool_backward_sk"));
-              viennacl::ocl::enqueue(
-                 oclk_ave_pool_backward(count,
-                     WrapHandle((cl_mem) top_diff, &ctx),
-                     top[0]->shape(0), channels_, height_, width_,
-                     pooled_height_, pooled_width_, kernel_h_,
-                     kernel_w_, ext_kernel_h, ext_kernel_w,
-                     stride_h_, stride_w_, dilation_h_, dilation_w_,
-                     pad_h_, pad_w_,
-                     WrapHandle((cl_mem) bottom_diff, &ctx)),
-                     ctx.get_queue());
-            }
-            break;
-            default:
-            LOG(FATAL)<<
-            "Unknown or unsupported pooling method in Backward_gpu().";
+      switch (this->layer_param_.pooling_param().pool()) {
+        case PoolingParameter_PoolMethod_MAX: {
+          if (use_top_mask) {
+            top_mask = top[1]->gpu_data();
+          } else {
+            mask = max_idx_.gpu_data();
           }
-        } else {
-          switch (this->layer_param_.pooling_param().pool()) {
-            case PoolingParameter_PoolMethod_MAX: {
-              if (use_top_mask) {
-                top_mask = top[1]->gpu_data();
-              } else {
-                mask = max_idx_.gpu_data();
-              }
-              viennacl::ocl::kernel &oclk_max_pool_backward =
-              program.get_kernel(
-                  CL_KERNEL_SELECT("max_pool_backward"));
-              viennacl::ocl::enqueue(
-                  oclk_max_pool_backward(count,
-                      WrapHandle((cl_mem) top_diff, &ctx),
-                      mask == NULL ? 0 : 1,
-                      WrapHandle((cl_mem) mask, &ctx),
-                      WrapHandle((cl_mem) top_mask, &ctx),
-                      top[0]->shape(0), channels_, height_, width_,
-                      pooled_height_, pooled_width_, kernel_h_,
-                      kernel_w_, stride_h_, stride_w_, pad_h_,
-                      pad_w_,
-                      WrapHandle((cl_mem) bottom_diff, &ctx)),
-                  ctx.get_queue());
-            }
-            break;
-            case PoolingParameter_PoolMethod_AVE: {
-              viennacl::ocl::kernel &oclk_ave_pool_backward =
-              program.get_kernel(
-                  CL_KERNEL_SELECT("ave_pool_backward"));
-              viennacl::ocl::enqueue(
-                  oclk_ave_pool_backward(count,
-                      WrapHandle((cl_mem) top_diff, &ctx),
-                      top[0]->shape(0), channels_, height_, width_,
-                      pooled_height_, pooled_width_, kernel_h_,
-                      kernel_w_, stride_h_, stride_w_, pad_h_,
-                      pad_w_,
-                      WrapHandle((cl_mem) bottom_diff, &ctx)),
-                  ctx.get_queue());
-            }
-            break;
-            case PoolingParameter_PoolMethod_STOCHASTIC: {
-              viennacl::ocl::kernel &oclk_sto_pool_backward =
-              program.get_kernel(
-                  CL_KERNEL_SELECT("sto_pool_backward"));
-              viennacl::ocl::enqueue(
-                  oclk_sto_pool_backward(
-                      count, WrapHandle((cl_mem) (rand_idx_.gpu_data()), &ctx),
-                      WrapHandle((cl_mem) top_diff, &ctx), top[0]->shape(0),
-                      channels_,
-                      height_, width_, pooled_height_, pooled_width_, kernel_h_,
-                      kernel_w_, stride_h_, stride_w_,
-                      WrapHandle((cl_mem) bottom_diff, &ctx)),
-                  ctx.get_queue());
-            }
-            break;
-            default: {
-              LOG(FATAL)<< "Unknown pooling method.";
-            }
-          }
-        }
-      } else {
-        switch (this->layer_param_.pooling_param().pool()) {
-          case PoolingParameter_PoolMethod_MAX: {
-            if (use_top_mask) {
-              top_mask = top[1]->gpu_data();
-            } else {
-              mask = max_idx_.gpu_data();
-            }
-            viennacl::ocl::kernel &oclk_max_pool_backward = program.get_kernel(
-                CL_KERNEL_SELECT("max_pool_backward_nd"));
-            viennacl::ocl::enqueue(
-                oclk_max_pool_backward(
-                    count, num_spatial_axes_,
-                    WrapHandle((cl_mem) top_diff, &ctx),
-                    mask == NULL ? 0 : 1, WrapHandle((cl_mem) mask, &ctx),
-                    WrapHandle((cl_mem) top_mask, &ctx), channels_,
-                    WrapHandle((cl_mem) (size_.gpu_data()), &ctx),
-                    WrapHandle((cl_mem) (pooled_size_.gpu_data()), &ctx),
-                    WrapHandle((cl_mem) (kernel_shape_.gpu_data()), &ctx),
-                    WrapHandle((cl_mem) (ext_kernel_shape_.gpu_data()), &ctx),
-                    WrapHandle((cl_mem) (stride_.gpu_data()), &ctx),
-                    WrapHandle((cl_mem) (dilation_.gpu_data()), &ctx),
-                    WrapHandle((cl_mem) (pad_.gpu_data()), &ctx),
-                    WrapHandle((cl_mem) bottom_diff, &ctx)),
-                ctx.get_queue());
-          }
+
+          shared_ptr<DeviceKernel> kernel =
+                            this->device_program_->GetKernel("MaxPoolBackward");
+          kernel->add_arg(&count);
+          kernel->add_arg(&top_diff);
+          kernel->add_arg(&mask);
+          kernel->add_arg(&top_mask);
+          kernel->add_arg(&num);
+          kernel->add_arg(&channels_);
+          kernel->add_arg(&height);
+          kernel->add_arg(&width);
+          kernel->add_arg(&pooled_height);
+          kernel->add_arg(&pooled_width);
+          kernel->add_arg(&kernel_h);
+          kernel->add_arg(&kernel_w);
+          kernel->add_arg(&stride_h);
+          kernel->add_arg(&stride_w);
+          kernel->add_arg(&pad_h);
+          kernel->add_arg(&pad_w);
+          kernel->add_arg(&bottom_diff);
+
+          vector<size_t> work_size(1, count);
+          vector<size_t> group;
+          vector<size_t> local;
+          this->device_->get_threads(&work_size, &group, &local, kernel.get(),
+                                     true);
+          kernel->Execute(group, local);
           break;
-          default:
-          LOG(FATAL)
-          << "Unknown or unsupported pooling method in Backward_gpu().";
+        }
+        case PoolingParameter_PoolMethod_AVE: {
+          shared_ptr<DeviceKernel> kernel =
+                            this->device_program_->GetKernel("AvePoolBackward");
+          kernel->add_arg(&count);
+          kernel->add_arg(&top_diff);
+          kernel->add_arg(&num);
+          kernel->add_arg(&channels_);
+          kernel->add_arg(&height);
+          kernel->add_arg(&width);
+          kernel->add_arg(&pooled_height);
+          kernel->add_arg(&pooled_width);
+          kernel->add_arg(&kernel_h);
+          kernel->add_arg(&kernel_w);
+          kernel->add_arg(&stride_h);
+          kernel->add_arg(&stride_w);
+          kernel->add_arg(&pad_h);
+          kernel->add_arg(&pad_w);
+          kernel->add_arg(&bottom_diff);
+
+          vector<size_t> work_size(1, count);
+          vector<size_t> group;
+          vector<size_t> local;
+          this->device_->get_threads(&work_size, &group, &local, kernel.get(), true);
+          kernel->Execute(group, local);
+          break;
+        }
+        case PoolingParameter_PoolMethod_STOCHASTIC: {
+          vptr<const Dtype> rand_idx_data = rand_idx_.gpu_data();
+
+          shared_ptr<DeviceKernel> kernel =
+                            this->device_program_->GetKernel("StoPoolBackward");
+          kernel->add_arg(&count);
+          kernel->add_arg(&rand_idx_data);
+          kernel->add_arg(&top_diff);
+          kernel->add_arg(&num);
+          kernel->add_arg(&channels_);
+          kernel->add_arg(&height);
+          kernel->add_arg(&width);
+          kernel->add_arg(&pooled_height);
+          kernel->add_arg(&pooled_width);
+          kernel->add_arg(&kernel_h);
+          kernel->add_arg(&kernel_w);
+          kernel->add_arg(&stride_h);
+          kernel->add_arg(&stride_w);
+          kernel->add_arg(&bottom_diff);
+
+          vector<size_t> work_size(1, count);
+          vector<size_t> group;
+          vector<size_t> local;
+          this->device_->get_threads(&work_size, &group, &local, kernel.get(),
+                                     true);
+          kernel->Execute(group, local);
+          break;
+        }
+        default: {
+          LOG(FATAL) << "Unknown pooling method.";
         }
       }
-#endif  // USE_GREENTEA
+    }
+  } else {
+    switch (this->layer_param_.pooling_param().pool()) {
+      case PoolingParameter_PoolMethod_MAX: {
+        if (use_top_mask) {
+          top_mask = top[1]->gpu_data();
+        } else {
+          mask = max_idx_.gpu_data();
+        }
+
+        vptr<const int_tp> size_data = size_.gpu_data();
+        vptr<const int_tp> pooled_size_data = pooled_size_.gpu_data();
+        vptr<const int_tp> kernel_shape_data = kernel_shape_.gpu_data();
+        vptr<const int_tp> ext_kernel_shape_data = ext_kernel_shape_.gpu_data();
+        vptr<const int_tp> stride_data = stride_.gpu_data();
+        vptr<const int_tp> dilation_data = dilation_.gpu_data();
+        vptr<const int_tp> pad_data = pad_.gpu_data();
+
+        shared_ptr<DeviceKernel> kernel =
+                          this->device_program_->GetKernel("MaxPoolBackwardND");
+        kernel->add_arg(&count);
+        kernel->add_arg(&num_spatial_axes_);
+        kernel->add_arg(&top_diff);
+        kernel->add_arg(&mask);
+        kernel->add_arg(&top_mask);
+        kernel->add_arg(&channels_);
+        kernel->add_arg(&size_data);
+        kernel->add_arg(&pooled_size_data);
+        kernel->add_arg(&kernel_shape_data);
+        kernel->add_arg(&ext_kernel_shape_data);
+        kernel->add_arg(&stride_data);
+        kernel->add_arg(&dilation_data);
+        kernel->add_arg(&pad_data);
+        kernel->add_arg(&bottom_diff);
+
+        vector<size_t> work_size(1, count);
+        vector<size_t> group;
+        vector<size_t> local;
+        this->device_->get_threads(&work_size, &group, &local, kernel.get(),
+                                   true);
+        kernel->Execute(group, local);
+        break;
+      }
+      default: {
+        LOG(FATAL) <<
+        "Unknown or unsupported pooling method in Backward_gpu().";
+      }
     }
   }
+}
 
-INSTANTIATE_LAYER_GPU_FUNCS(PoolingLayer);
+INSTANTIATE_CLASST_FUNC_3T_GUARDED(PoolingLayer, GenerateProgram,
+                                  (half_fp), (half_fp), PROTO_TYPES);
+INSTANTIATE_CLASST_FUNC_3T_GUARDED(PoolingLayer, GenerateProgram,
+                                  (float), (float), PROTO_TYPES);
+INSTANTIATE_CLASST_FUNC_3T_GUARDED(PoolingLayer, GenerateProgram,
+                                  (double), (double),  PROTO_TYPES);
+INSTANTIATE_CLASST_FUNC_3T_GUARDED(PoolingLayer, GenerateProgram,
+                                  (uint8_t), (uint8_t),  PROTO_TYPES);
+INSTANTIATE_CLASST_FUNC_3T_GUARDED(PoolingLayer, GenerateProgram,
+                                  (uint16_t), (uint16_t),  PROTO_TYPES);
+INSTANTIATE_CLASST_FUNC_3T_GUARDED(PoolingLayer, GenerateProgram,
+                                  (uint32_t), (uint32_t),  PROTO_TYPES);
+INSTANTIATE_CLASST_FUNC_3T_GUARDED(PoolingLayer, GenerateProgram,
+                                  (uint64_t), (uint64_t),  PROTO_TYPES);
+
+INSTANTIATE_CLASST_FUNC_3T_GUARDED(PoolingLayer, Forward_gpu,
+                                  (half_fp), (half_fp), PROTO_TYPES);
+INSTANTIATE_CLASST_FUNC_3T_GUARDED(PoolingLayer, Forward_gpu,
+                                  (float), (float), PROTO_TYPES);
+INSTANTIATE_CLASST_FUNC_3T_GUARDED(PoolingLayer, Forward_gpu,
+                                  (double), (double), PROTO_TYPES);
+INSTANTIATE_CLASST_FUNC_3T_GUARDED(PoolingLayer, Forward_gpu,
+                                  (uint8_t), (uint8_t),  PROTO_TYPES);
+INSTANTIATE_CLASST_FUNC_3T_GUARDED(PoolingLayer, Forward_gpu,
+                                  (uint16_t), (uint16_t),  PROTO_TYPES);
+INSTANTIATE_CLASST_FUNC_3T_GUARDED(PoolingLayer, Forward_gpu,
+                                  (uint32_t), (uint32_t),  PROTO_TYPES);
+INSTANTIATE_CLASST_FUNC_3T_GUARDED(PoolingLayer, Forward_gpu,
+                                  (uint64_t), (uint64_t),  PROTO_TYPES);
+
+INSTANTIATE_CLASST_FUNC_3T_GUARDED(PoolingLayer, Backward_gpu,
+                                  (half_fp), (half_fp), PROTO_TYPES);
+INSTANTIATE_CLASST_FUNC_3T_GUARDED(PoolingLayer, Backward_gpu,
+                                  (float), (float), PROTO_TYPES);
+INSTANTIATE_CLASST_FUNC_3T_GUARDED(PoolingLayer, Backward_gpu,
+                                  (double), (double), PROTO_TYPES);
+INSTANTIATE_CLASST_FUNC_3T_GUARDED(PoolingLayer, Backward_gpu,
+                                  (uint8_t), (uint8_t),  PROTO_TYPES);
+INSTANTIATE_CLASST_FUNC_3T_GUARDED(PoolingLayer, Backward_gpu,
+                                  (uint16_t), (uint16_t),  PROTO_TYPES);
+INSTANTIATE_CLASST_FUNC_3T_GUARDED(PoolingLayer, Backward_gpu,
+                                  (uint32_t), (uint32_t),  PROTO_TYPES);
+INSTANTIATE_CLASST_FUNC_3T_GUARDED(PoolingLayer, Backward_gpu,
+                                  (uint64_t), (uint64_t),  PROTO_TYPES);
 
 }  // namespace caffe

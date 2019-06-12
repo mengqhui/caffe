@@ -5,9 +5,12 @@
 
 namespace caffe {
 
-template <typename Dtype>
-void DummyDataLayer<Dtype>::LayerSetUp(const vector<Blob<Dtype>*>& bottom,
-      const vector<Blob<Dtype>*>& top) {
+template<typename Dtype, typename MItype, typename MOtype>
+void DummyDataLayer<Dtype, MItype, MOtype>::LayerSetUp(
+      const vector<Blob<MItype>*>& bottom,
+      const vector<Blob<MOtype>*>& top) {
+  this->InitializeQuantizers(bottom, top);
+
   const int_tp num_top = top.size();
   const DummyDataParameter& param = this->layer_param_.dummy_data_param();
   const int_tp num_data_filler = param.data_filler_size();
@@ -97,9 +100,10 @@ void DummyDataLayer<Dtype>::LayerSetUp(const vector<Blob<Dtype>*>& bottom,
   }
 }
 
-template <typename Dtype>
-void DummyDataLayer<Dtype>::Forward_cpu(const vector<Blob<Dtype>*>& bottom,
-      const vector<Blob<Dtype>*>& top) {
+template<typename Dtype, typename MItype, typename MOtype>
+void DummyDataLayer<Dtype, MItype, MOtype>::Forward_cpu(
+      const vector<Blob<MItype>*>& bottom,
+      const vector<Blob<MOtype>*>& top) {
   for (int_tp i = 0; i < top.size(); ++i) {
     const int_tp filler_id = (fillers_.size() > 1) ? i : 0;
     if (refill_[filler_id]) {
@@ -108,7 +112,13 @@ void DummyDataLayer<Dtype>::Forward_cpu(const vector<Blob<Dtype>*>& bottom,
   }
 }
 
-INSTANTIATE_CLASS(DummyDataLayer);
+INSTANTIATE_CLASS_3T_GUARDED(DummyDataLayer, (half_fp), (half_fp), (half_fp));
+INSTANTIATE_CLASS_3T_GUARDED(DummyDataLayer, (float), (float), (float));
+INSTANTIATE_CLASS_3T_GUARDED(DummyDataLayer, (double), (double), (double));
+
 REGISTER_LAYER_CLASS(DummyData);
+REGISTER_LAYER_CLASS_INST(DummyData, (half_fp), (half_fp), (half_fp));
+REGISTER_LAYER_CLASS_INST(DummyData, (float), (float), (float));
+REGISTER_LAYER_CLASS_INST(DummyData, (double), (double), (double));
 
 }  // namespace caffe

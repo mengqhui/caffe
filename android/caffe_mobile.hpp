@@ -7,8 +7,8 @@
 #include "caffe/caffe.hpp"
 #include <opencv2/core/core.hpp>
 
-using std::string;
-using std::vector;
+using string;
+using vector;
 
 namespace caffe {
 
@@ -41,7 +41,7 @@ private:
 
   void Preprocess(const cv::Mat &img, vector<cv::Mat> *input_channels);
 
-  void WrapInputLayer(std::vector<cv::Mat> *input_channels);
+  void WrapInputLayer(vector<cv::Mat> *input_channels);
 
   vector<float> Forward(const cv::Mat &img);
 

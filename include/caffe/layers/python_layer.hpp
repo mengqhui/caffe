@@ -10,14 +10,15 @@ namespace bp = boost::python;
 
 namespace caffe {
 
-template <typename Dtype>
-class PythonLayer : public Layer<Dtype> {
+template<typename Dtype, typename MItype, typename MOtype>
+class PythonLayer : public Layer<Dtype, MItype, MOtype> {
  public:
   PythonLayer(PyObject* self, const LayerParameter& param)
-      : Layer<Dtype>(param), self_(bp::handle<>(bp::borrowed(self))) { }
+      : Layer<Dtype, MItype, MOtype>(param),
+        self_(bp::handle<>(bp::borrowed(self))) { }
 
-  virtual void LayerSetUp(const vector<Blob<Dtype>*>& bottom,
-      const vector<Blob<Dtype>*>& top) {
+  virtual void LayerSetUp(const vector<Blob<MItype>*>& bottom,
+      const vector<Blob<MOtype>*>& top) {
     // Disallow PythonLayer in MultiGPU training stage, due to GIL issues
     // Details: https://github.com/BVLC/caffe/issues/2936
     if (this->phase_ == TRAIN && Caffe::solver_count() > 1
@@ -32,30 +33,27 @@ class PythonLayer : public Layer<Dtype> {
     self_.attr("setup")(bottom, top);
     PyGILState_Release(gstate);
   }
-  virtual void Reshape(const vector<Blob<Dtype>*>& bottom,
-      const vector<Blob<Dtype>*>& top) {
+  virtual void Reshape(const vector<Blob<MItype>*>& bottom,
+      const vector<Blob<MOtype>*>& top) {
     PyGILState_STATE gstate;
     gstate = PyGILState_Ensure();
     self_.attr("reshape")(bottom, top);
     PyGILState_Release(gstate);
   }
 
-  virtual inline bool ShareInParallel() const {
-    return this->layer_param_.python_param().share_in_parallel();
-  }
-
   virtual inline const char* type() const { return "Python"; }
 
  protected:
-  virtual void Forward_cpu(const vector<Blob<Dtype>*>& bottom,
-      const vector<Blob<Dtype>*>& top) {
+  virtual void Forward_cpu(const vector<Blob<MItype>*>& bottom,
+      const vector<Blob<MOtype>*>& top) {
     PyGILState_STATE gstate;
     gstate = PyGILState_Ensure();
     self_.attr("forward")(bottom, top);
     PyGILState_Release(gstate);
   }
-  virtual void Backward_cpu(const vector<Blob<Dtype>*>& top,
-      const vector<bool>& propagate_down, const vector<Blob<Dtype>*>& bottom) {
+  virtual void Backward_cpu(const vector<Blob<MOtype>*>& top,
+      const vector<bool>& propagate_down,
+      const vector<Blob<MItype>*>& bottom) {
     PyGILState_STATE gstate;
     gstate = PyGILState_Ensure();
     self_.attr("backward")(top, propagate_down, bottom);
@@ -68,4 +66,4 @@ class PythonLayer : public Layer<Dtype> {
 
 }  // namespace caffe
 
-#endif
+#endif  // CAFFE_PYTHON_LAYER_HPP_

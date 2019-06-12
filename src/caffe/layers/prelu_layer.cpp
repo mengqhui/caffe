@@ -8,9 +8,9 @@
 
 namespace caffe {
 
-template<typename Dtype>
-void PReLULayer<Dtype>::LayerSetUp(const vector<Blob<Dtype>*>& bottom,
-                                   const vector<Blob<Dtype>*>& top) {
+template<typename Dtype, typename MItype, typename MOtype>
+void PReLULayer<Dtype, MItype, MOtype>::LayerSetUp(const vector<Blob<MItype>*>& bottom,
+                                   const vector<Blob<MOtype>*>& top) {
   CHECK_GE(bottom[0]->num_axes(), 2)
       << "Number of axes of bottom blob must be >=2.";
   PReLUParameter prelu_param = this->layer_param().prelu_param();
@@ -21,7 +21,7 @@ void PReLULayer<Dtype>::LayerSetUp(const vector<Blob<Dtype>*>& bottom,
   } else {
     this->blobs_.resize(1);
     if (channel_shared_) {
-      this->blobs_[0].reset(new Blob<Dtype>(vector<int_tp>(0),
+      this->blobs_[0].reset(new Blob<Dtype>(vector<int_tp>(1, 1),
                                             this->device_));
     } else {
       this->blobs_[0].reset(new Blob<Dtype>(vector<int_tp>(1, channels),
@@ -51,11 +51,14 @@ void PReLULayer<Dtype>::LayerSetUp(const vector<Blob<Dtype>*>& bottom,
   multiplier_.Reshape(vector<int_tp>(1, bottom[0]->count(1)));
   backward_buff_.Reshape(vector<int_tp>(1, bottom[0]->count(1)));
   caffe_set(multiplier_.count(), Dtype(1), multiplier_.mutable_cpu_data());
+
+  this->InitializeQuantizers(bottom, top);
 }
 
-template<typename Dtype>
-void PReLULayer<Dtype>::Reshape(const vector<Blob<Dtype>*>& bottom,
-                                const vector<Blob<Dtype>*>& top) {
+template<typename Dtype, typename MItype, typename MOtype>
+void PReLULayer<Dtype, MItype, MOtype>::Reshape(
+    const vector<Blob<MItype>*>& bottom,
+    const vector<Blob<MOtype>*>& top) {
   CHECK_GE(bottom[0]->num_axes(), 2)
       << "Number of axes of bottom blob must be >=2.";
   top[0]->ReshapeLike(*bottom[0]);
@@ -63,11 +66,16 @@ void PReLULayer<Dtype>::Reshape(const vector<Blob<Dtype>*>& bottom,
     // For in-place computation
     bottom_memory_.ReshapeLike(*bottom[0]);
   }
+
+  if (Caffe::mode() == Caffe::GPU && this->device_program_.get() == nullptr) {
+    this->GenerateProgram();
+  }
 }
 
-template<typename Dtype>
-void PReLULayer<Dtype>::Forward_cpu(const vector<Blob<Dtype>*>& bottom,
-                                    const vector<Blob<Dtype>*>& top) {
+template<typename Dtype, typename MItype, typename MOtype>
+void PReLULayer<Dtype, MItype, MOtype>::Forward_cpu(
+    const vector<Blob<MItype>*>& bottom,
+    const vector<Blob<MOtype>*>& top) {
   const Dtype* bottom_data = bottom[0]->cpu_data();
   Dtype* top_data = top[0]->mutable_cpu_data();
   const int_tp count = bottom[0]->count();
@@ -77,7 +85,7 @@ void PReLULayer<Dtype>::Forward_cpu(const vector<Blob<Dtype>*>& bottom,
 
   // For in-place computation
   if (bottom[0] == top[0]) {
-    caffe_cpu_copy(count, bottom_data, bottom_memory_.mutable_cpu_data());
+    caffe_copy(count, bottom_data, bottom_memory_.mutable_cpu_data());
   }
 
   // if channel_shared, channel index in the following computation becomes
@@ -90,10 +98,10 @@ void PReLULayer<Dtype>::Forward_cpu(const vector<Blob<Dtype>*>& bottom,
   }
 }
 
-template<typename Dtype>
-void PReLULayer<Dtype>::Backward_cpu(const vector<Blob<Dtype>*>& top,
+template<typename Dtype, typename MItype, typename MOtype>
+void PReLULayer<Dtype, MItype, MOtype>::Backward_cpu(const vector<Blob<MOtype>*>& top,
                                      const vector<bool>& propagate_down,
-                                     const vector<Blob<Dtype>*>& bottom) {
+                                     const vector<Blob<MItype>*>& bottom) {
   const Dtype* bottom_data = bottom[0]->cpu_data();
   const Dtype* slope_data = this->blobs_[0]->cpu_data();
   const Dtype* top_diff = top[0]->cpu_diff();
@@ -136,7 +144,14 @@ void PReLULayer<Dtype>::Backward_cpu(const vector<Blob<Dtype>*>& top,
 STUB_GPU(PReLULayer);
 #endif
 
-INSTANTIATE_CLASS(PReLULayer);
+INSTANTIATE_CLASS_3T_GUARDED(PReLULayer, (half_fp), (half_fp), (half_fp));
+INSTANTIATE_CLASS_3T_GUARDED(PReLULayer, (float), (float), (float));
+INSTANTIATE_CLASS_3T_GUARDED(PReLULayer, (double), (double), (double));
+
 REGISTER_LAYER_CLASS(PReLU);
+REGISTER_LAYER_CLASS_INST(PReLU, (half_fp), (half_fp), (half_fp));
+REGISTER_LAYER_CLASS_INST(PReLU, (float), (float), (float));
+REGISTER_LAYER_CLASS_INST(PReLU, (double), (double), (double));
+
 
 }  // namespace caffe

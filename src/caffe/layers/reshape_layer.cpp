@@ -4,9 +4,10 @@
 
 namespace caffe {
 
-template <typename Dtype>
-void ReshapeLayer<Dtype>::LayerSetUp(const vector<Blob<Dtype>*>& bottom,
-    const vector<Blob<Dtype>*>& top) {
+template<typename Dtype, typename MItype, typename MOtype>
+void ReshapeLayer<Dtype, MItype, MOtype>::LayerSetUp(
+    const vector<Blob<MItype>*>& bottom,
+    const vector<Blob<MOtype>*>& top) {
   CHECK_NE(top[0], bottom[0]) << this->type() << " Layer does not "
       "allow in-place computation.";
   inferred_axis_ = -1;
@@ -26,11 +27,13 @@ void ReshapeLayer<Dtype>::LayerSetUp(const vector<Blob<Dtype>*>& bottom,
       constant_count_ *= top_dim;
     }
   }
+  this->InitializeQuantizers(bottom, top);
 }
 
-template <typename Dtype>
-void ReshapeLayer<Dtype>::Reshape(const vector<Blob<Dtype>*>& bottom,
-    const vector<Blob<Dtype>*>& top) {
+template<typename Dtype, typename MItype, typename MOtype>
+void ReshapeLayer<Dtype, MItype, MOtype>::Reshape(
+    const vector<Blob<MItype>*>& bottom,
+    const vector<Blob<MOtype>*>& top) {
   const int_tp input_start_axis = this->layer_param_.reshape_param().axis();
   const int_tp start_axis = (input_start_axis >= 0) ? input_start_axis :
       bottom[0]->num_axes() + input_start_axis + 1;
@@ -68,7 +71,7 @@ void ReshapeLayer<Dtype>::Reshape(const vector<Blob<Dtype>*>& bottom,
         bottom[0]->shape(start_axis + copy_axis_index);
   }
   if (inferred_axis_ >= 0) {
-    // A -1 dim was specified; infer the correct dimension by computing the
+    // a -1 dim was specified; infer the correct dimension by computing the
     // product of the other dimensions.
     int_tp explicit_count = constant_count_;
     explicit_count *= bottom[0]->count(0, start_axis);
@@ -90,7 +93,13 @@ void ReshapeLayer<Dtype>::Reshape(const vector<Blob<Dtype>*>& bottom,
   top[0]->ShareDiff(*bottom[0]);
 }
 
-INSTANTIATE_CLASS(ReshapeLayer);
+INSTANTIATE_CLASS_3T_GUARDED(ReshapeLayer, (half_fp), (half_fp), (half_fp));
+INSTANTIATE_CLASS_3T_GUARDED(ReshapeLayer, (float), (float), (float));
+INSTANTIATE_CLASS_3T_GUARDED(ReshapeLayer, (double), (double), (double));
+
 REGISTER_LAYER_CLASS(Reshape);
+REGISTER_LAYER_CLASS_INST(Reshape, (half_fp), (half_fp), (half_fp));
+REGISTER_LAYER_CLASS_INST(Reshape, (float), (float), (float));
+REGISTER_LAYER_CLASS_INST(Reshape, (double), (double), (double));
 
 }  // namespace caffe

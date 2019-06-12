@@ -18,8 +18,8 @@ endif()
 project(Caffe C CXX)
 
 # ---[ Caffe version
-set(CAFFE_TARGET_VERSION "1.0.0-rc5" CACHE STRING "Caffe logical version")
-set(CAFFE_TARGET_SOVERSION "1.0.0-rc5" CACHE STRING "Caffe soname version")
+set(CAFFE_TARGET_VERSION "1.0.0" CACHE STRING "Caffe logical version")
+set(CAFFE_TARGET_SOVERSION "1.0.0" CACHE STRING "Caffe soname version")
 add_definitions(-DCAFFE_VERSION=${CAFFE_TARGET_VERSION})
 
 # This code is taken from https://github.com/sh1r0/caffe-android-lib
@@ -40,6 +40,7 @@ endif()
 list(APPEND CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake/Modules)
 
 include(ExternalProject)
+include(GNUInstallDirs)
 
 include(cmake/Utils.cmake)
 include(cmake/Targets.cmake)
@@ -50,10 +51,21 @@ include(cmake/WindowsCreateLinkHeader.cmake)
 include(cmake/TargetResolvePrerequesites.cmake)
 
 # ---[ Options
-caffe_option(CPU_ONLY "Build Caffe without CUDA and OpenCL support" OFF)
+caffe_option(CPU_ONLY "Build Caffe without CUDA, OpenCL and HIP support" OFF)
 caffe_option(USE_INDEX_64 "Build Caffe with 64 bit indexing" OFF)
+caffe_option(USE_HALF "Build Caffe with FP16 support" ON)
+caffe_option(USE_SINGLE "Build Caffe with FP32 support" ON)
+caffe_option(USE_DOUBLE "Build Caffe with FP64 support" OFF)
+caffe_option(USE_INT_QUANT_8 "Build Caffe with 8 bit integer quantization support" ON)
+caffe_option(USE_INT_QUANT_16 "Build Caffe with 16 bit integer quantization support" ON)
+caffe_option(USE_INT_QUANT_32 "Build Caffe with 32 bit integer quantization support" OFF)
+caffe_option(USE_INT_QUANT_64 "Build Caffe with 64 bit integer quantization support" OFF)
 caffe_option(USE_CUDA "Build Caffe with CUDA support" OFF)
-caffe_option(USE_GREENTEA "Build Caffe with OpenCL support" ON)
+caffe_option(USE_OPENCL "Build Caffe with OpenCL support" ON)
+caffe_option(USE_HSA "Build Caffe with HSA support. Should be enabled for AMDGPU-PRO and ROCM." OFF)
+caffe_option(USE_HIP "Build Caffe with HIP support." OFF)
+caffe_option(FORCE_COMPILE_CU_AS_CPP "Force .cu files to be compiled with C++ compiler instead of NVCC" ON)
+caffe_option(DISABLE_DEVICE_HOST_UNIFIED_MEMORY "Disable host/device shared memory" OFF)
 caffe_option(USE_LIBDNN "Build Caffe with LibDNN library support" ON)
 caffe_option(USE_CLBLAS "Build Caffe with clBLAS support (instead of using ViennaClBLAS)" OFF)
 caffe_option(USE_CLBLAST "Build Caffe with CLBlast support (instead of using ViennaClBLAS)" OFF)
@@ -68,26 +80,61 @@ else()
   caffe_option(BUILD_SHARED_LIBS "Build shared libraries" ON)
 endif()
 caffe_option(BUILD_python "Build Python wrapper" ON)
-set(python_version "2" CACHE STRING "Specify which Python version to use")
+set(python_version "3" CACHE STRING "Specify which Python version to use")
 caffe_option(BUILD_matlab "Build Matlab wrapper" OFF)
 caffe_option(BUILD_docs   "Build documentation" ON IF UNIX OR APPLE)
 caffe_option(BUILD_python_layer "Build the Caffe Python layer" ON)
 caffe_option(USE_OPENCV "Build with OpenCV support" ON)
 caffe_option(USE_LEVELDB "Build with levelDB" ON)
 caffe_option(USE_LMDB "Build with lmdb" ON)
+caffe_option(USE_HDF5 "Build with hdf5" ON)
 caffe_option(ALLOW_LMDB_NOLOCK "Allow MDB_NOLOCK when reading LMDB files (only if necessary)" OFF)
 caffe_option(USE_OPENMP "Link with OpenMP (when your BLAS wants OpenMP and you get linker errors)" OFF)
 caffe_option(USE_FFT "Build with fftw3 or/and clFFT" OFF)
+caffe_option(USE_SQLITE "Build with SQLITE kernel cache" ON)
+caffe_option(USE_GEMMLOWP "Build with Gemmlowp support" OFF)
+caffe_option(USE_NATIVE_MARCH "Build with -march=native flag, if supported" ON)
+caffe_option(USE_ARM_CROSS_COMPILE "Cross compile for Asus Tinkerboard or Raspberry Pi" OFF)
+
+# ---[ Option to force a persistent storage path
+set(CAFFE_STORAGE_PATH_OVERRIDE "" CACHE STRING "Caffe persistent storage path override (for sqlite cache)")
 
 # ---[ Flag consistency check
 if(CPU_ONLY)
   set(USE_CUDA OFF)
-  set(USE_GREENTEA OFF)
+  set(USE_OPENCL OFF)
   set(USE_CUDNN OFF)
   set(USE_LIBDNN OFF)
   set(USE_CLBLAS OFF)
   set(USE_CLBLAST OFF)
+  set(USE_HSA OFF)
+  set(USE_HIP OFF)
 endif()
+
+# ---[ Cross compile for ARM (Asus Tinkerboard, Rasperry Pi)
+if(USE_ARM_CROSS_COMPILE)
+  set(CMAKE_SYSTEM_NAME Linux)
+  set(CMAKE_SYSTEM_PROCESSOR arm)
+  set(CMAKE_CROSSCOMPILING TRUE)
+  set(CMAKE_PREFIX_PATH "${CMAKE_FIND_ROOT_PATH}")
+  set(CMAKE_SYSROOT "${CMAKE_FIND_ROOT_PATH}")
+  set(CMAKE_SYSROOT_COMPILE "${CMAKE_FIND_ROOT_PATH}")
+  set(CMAKE_CXX_IMPLICIT_INCLUDE_DIRECTORIES "${CMAKE_FIND_ROOT_PATH}/usr/include;${CMAKE_FIND_ROOT_PATH}/usr/include/arm-linux-gnueabihf")
+  set(CMAKE_C_IMPLICIT_INCLUDE_DIRECTORIES "${CMAKE_FIND_ROOT_PATH}/usr/include;${CMAKE_FIND_ROOT_PATH}/usr/include/arm-linux-gnueabihf")
+  set(CMAKE_CUDA_IMPLICIT_INCLUDE_DIRECTORIES "${CMAKE_FIND_ROOT_PATH}/usr/include;${CMAKE_FIND_ROOT_PATH}/usr/include/arm-linux-gnueabihf")
+  include_directories(PUBLIC "${CMAKE_FIND_ROOT_PATH}/usr/include;${CMAKE_FIND_ROOT_PATH}/usr/include/arm-linux-gnueabihf")
+  set(CMAKE_INSTALL_OLDINCLUDEDIR "${CMAKE_FIND_ROOT_PATH}/usr/include" CACHE STRING "Header files" FORCE)
+  set(USE_HDF5 OFF CACHE BOOL "Build with hdf5" FORCE)
+  set(BOOST_INCLUDEDIR "${CMAKE_FIND_ROOT_PATH}/usr/include" CACHE STRING "Boost inculde path")
+  set(BOOST_LIBRARYDIR "${CMAKE_FIND_ROOT_PATH}/usr/lib/arm-linux-gnueabihf" CACHE STRING "Caffe logical version")
+  unset(COMPILER_SUPPORTS_ARMV7ANEON CACHE)
+  CHECK_CXX_COMPILER_FLAG("-march=armv7-a" COMPILER_SUPPORTS_ARMV7ANEON)
+  if(COMPILER_SUPPORTS_ARMV7ANEON)
+    message("Using armv7a-neon target")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=armv7-a")
+  endif()
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -lm")
+endif()  
 
 if(USE_ISAAC)
   set(USE_CLBLAS ON)
@@ -114,7 +161,6 @@ endif()
 include(cmake/WindowsDownloadPrebuiltDependencies.cmake)
 
 # This code is taken from https://github.com/sh1r0/caffe-android-lib
-caffe_option(USE_HDF5 "Build with hdf5" ON)
 if(ANDROID)
   set(CMAKE_FIND_LIBRARY_SUFFIXES ".a;.so")
   caffe_enable_cpp11_support()
@@ -129,12 +175,17 @@ if(DISABLE_DEVICE_HOST_UNIFIED_MEMORY)
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DDISABLE_DEVICE_HOST_UNIFIED_MEMORY")
 endif()
 
-if(UNIX OR APPLE)
+if(UNIX OR APPLE OR USE_ARM_CROSS_COMPILE)
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fPIC -Wall -std=c++11 -DCMAKE_BUILD")
 endif()
 
-if(DISABLE_DOUBLE_SUPPORT)
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DDISABLE_DOUBLE_SUPPORT")
+if(USE_NATIVE_MARCH)
+  unset(COMPILER_SUPPORTS_MARCH_NATIVE CACHE)
+  CHECK_CXX_COMPILER_FLAG("-march=native" COMPILER_SUPPORTS_MARCH_NATIVE)
+  if(COMPILER_SUPPORTS_MARCH_NATIVE)
+    message("Using native target")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=native")
+  endif()
 endif()
 
 if(MSVC)
@@ -162,6 +213,7 @@ configure_file(cmake/Templates/caffe_config.h.in "${PROJECT_BINARY_DIR}/caffe_co
 set(Caffe_INCLUDE_DIR ${PROJECT_SOURCE_DIR}/include)
 include_directories(${Caffe_INCLUDE_DIR} ${PROJECT_BINARY_DIR})
 set(Caffe_SRC_DIR ${PROJECT_SOURCE_DIR}/src)
+set(Caffe_SCRIPT_DIR ${PROJECT_SOURCE_DIR}/scripts)
 include_directories(${PROJECT_BINARY_DIR})
 include_directories(BEFORE src) # This is needed for gtest.
 
@@ -209,8 +261,19 @@ if(BUILD_python)
   add_dependencies(pytest pycaffe)
 endif()
 
+# ---[ uninstall target
+configure_file(
+    ${CMAKE_CURRENT_SOURCE_DIR}/cmake/Uninstall.cmake.in
+    ${CMAKE_CURRENT_BINARY_DIR}/cmake/Uninstall.cmake
+    IMMEDIATE @ONLY)
+
+add_custom_target(uninstall
+    COMMAND ${CMAKE_COMMAND} -P
+    ${CMAKE_CURRENT_BINARY_DIR}/cmake/Uninstall.cmake)
+
 # ---[ Configuration summary
 caffe_print_configuration_summary()
 
 # ---[ Export configs generation
 caffe_generate_export_configs()
+

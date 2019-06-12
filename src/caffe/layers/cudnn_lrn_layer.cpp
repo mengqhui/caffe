@@ -5,10 +5,10 @@
 
 namespace caffe {
 
-template <typename Dtype>
-void CuDNNLRNLayer<Dtype>::LayerSetUp(const vector<Blob<Dtype>*>& bottom,
-    const vector<Blob<Dtype>*>& top) {
-  LRNLayer<Dtype>::LayerSetUp(bottom, top);
+template<typename Dtype, typename MItype, typename MOtype>
+void CuDNNLRNLayer<Dtype, MItype, MOtype>::LayerSetUp(const vector<Blob<MItype>*>& bottom,
+    const vector<Blob<MOtype>*>& top) {
+  LRNLayer<Dtype, MItype, MOtype>::LayerSetUp(bottom, top);
 
   CUDNN_CHECK(cudnnCreate(&handle_));
   CUDNN_CHECK(cudnnCreateLRNDescriptor(&norm_desc_));
@@ -24,12 +24,12 @@ void CuDNNLRNLayer<Dtype>::LayerSetUp(const vector<Blob<Dtype>*>& bottom,
   k_ = this->layer_param().lrn_param().k();
 }
 
-template <typename Dtype>
-void CuDNNLRNLayer<Dtype>::Reshape(const vector<Blob<Dtype>*>& bottom,
-    const vector<Blob<Dtype>*>& top) {
-  LRNLayer<Dtype>::Reshape(bottom, top);
+template<typename Dtype, typename MItype, typename MOtype>
+void CuDNNLRNLayer<Dtype, MItype, MOtype>::Reshape(const vector<Blob<MItype>*>& bottom,
+    const vector<Blob<MOtype>*>& top) {
+  LRNLayer<Dtype, MItype, MOtype>::Reshape(bottom, top);
 
-  std::vector<int_tp> shape;
+  vector<int_tp> shape;
 
   shape.push_back(bottom[0]->num());
   shape.push_back(this->channels_);
@@ -44,8 +44,8 @@ void CuDNNLRNLayer<Dtype>::Reshape(const vector<Blob<Dtype>*>& bottom,
   CUDNN_CHECK(cudnnSetLRNDescriptor(norm_desc_, size_, alpha_, beta_, k_));
 }
 
-template <typename Dtype>
-CuDNNLRNLayer<Dtype>::~CuDNNLRNLayer() {
+template<typename Dtype, typename MItype, typename MOtype>
+CuDNNLRNLayer<Dtype, MItype, MOtype>::~CuDNNLRNLayer() {
   // Check that handles have been setup before destroying.
   if (!handles_setup_) { return; }
 
@@ -56,7 +56,8 @@ CuDNNLRNLayer<Dtype>::~CuDNNLRNLayer() {
   cudnnDestroy(handle_);
 }
 
-INSTANTIATE_CLASS(CuDNNLRNLayer);
+INSTANTIATE_CLASS_3T_GUARDED(CuDNNLRNLayer, (float), (float), (float));
+INSTANTIATE_CLASS_3T_GUARDED(CuDNNLRNLayer, (double), (double), (double));
 
 }   // namespace caffe
 #endif

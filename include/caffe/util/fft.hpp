@@ -1,11 +1,11 @@
-#ifndef CAFFE_UTIL_caffe_cpu_fft_H_
-#define CAFFE_UTIL_caffe_cpu_fft_H_
+#ifndef CAFFE_UTIL_FFT_HPP_
+#define CAFFE_UTIL_FFT_HPP_
 #ifdef CMAKE_BUILD
 #include <caffe_config.h>
 #endif
 #ifdef USE_FFT
 #ifndef CPU_ONLY
-#ifdef USE_GREENTEA
+#ifdef USE_OPENCL
 #include <clFFT.h>
 #endif
 #endif
@@ -46,30 +46,30 @@ inline int next_mix_of_235(int value) {
   return (value+1);
 }
 
-template <typename Dtype> void* caffe_cpu_fft_malloc(int n);
-template <typename Dtype> void  caffe_cpu_fft_free(void* p);
-template <typename Dtype> void* caffe_cpu_fft_plan_dft_r2c_2d(int n0, int n1,
+template <typename Dtype> void* caffe_fft_malloc(int n);
+template <typename Dtype> void  caffe_fft_free(void* p);
+template <typename Dtype> void* caffe_fft_plan_dft_r2c_2d(int n0, int n1,
     Dtype *in, std::complex<Dtype> *out, unsigned flags);
-template <typename Dtype> void* caffe_cpu_fft_plan_dft_c2r_2d(int n0, int n1,
+template <typename Dtype> void* caffe_fft_plan_dft_c2r_2d(int n0, int n1,
     std::complex<Dtype> *in, Dtype *out, unsigned flags);
-template <typename Dtype> void* caffe_cpu_fft_plan_many_dft_r2c(int rank,
+template <typename Dtype> void* caffe_fft_plan_many_dft_r2c(int rank,
     const int *n, int howmany, Dtype *in, const int *inemded, int istride,
     int idist, std::complex<Dtype> *out, const int *onembed, int ostride,
     int odist, unsigned flags);
-template <typename Dtype> void caffe_cpu_fft_destroy_plan(void* plan);
-template <typename Dtype> void caffe_cpu_fft_execute(const void* plan);
-template <typename Dtype> void caffe_cpu_fft_execute_dft_r2c(const void* plan,
+template <typename Dtype> void caffe_fft_destroy_plan(void* plan);
+template <typename Dtype> void caffe_fft_execute(const void* plan);
+template <typename Dtype> void caffe_fft_execute_dft_r2c(const void* plan,
     Dtype *in, std::complex<Dtype> *out);
-template <typename Dtype> void caffe_cpu_fft_execute_dft_c2r(const void* plan,
+template <typename Dtype> void caffe_fft_execute_dft_c2r(const void* plan,
     std::complex<Dtype> *in, Dtype  *out);
 
 // --- GPU ---
 
 #ifndef CPU_ONLY
-#ifdef USE_GREENTEA
+#ifdef USE_OPENCL
 template <typename T>
 struct DtypeComplex {
-  T x, y;
+  T X, Y;
 };
 void clear_gpu_fft_buffer(void* data, const int size);
 template <typename Dtype>
@@ -154,11 +154,11 @@ void caffe_gpu_fft_execute_c2r(clfftPlanHandle plan,
 template <typename Dtype>
 void reshape_weights(DtypeComplex<Dtype>* dst, DtypeComplex<Dtype>* src,
     const int size, const int num_output, const int ch_gr);
-#endif  // USE_GREENTEA
+#endif  // USE_OPENCL
 #endif  // CPU_ONLY
 
 }  // namespace caffe
 
 #endif  // USE_FFT
 
-#endif  // CAFFE_UTIL_caffe_cpu_fft_H_
+#endif  // CAFFE_UTIL_FFT_HPP_

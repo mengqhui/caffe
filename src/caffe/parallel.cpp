@@ -93,7 +93,7 @@ GPUParams<Dtype>::GPUParams(shared_ptr<Solver<Dtype> > root_solver, int device)
   apply_buffers(net, data_, size_, copy);
 
   CUDA_CHECK(cudaMalloc(&diff_, size_ * sizeof(Dtype)));
-  caffe_gpu_set(size_, Dtype(0), diff_);
+  this->device_->set(size_, Dtype(0), diff_);
 
   CUDA_CHECK(cudaSetDevice(initial_device));
 }
@@ -235,7 +235,7 @@ void NCCL<Dtype>::run(int layer) {
                              size,
                              nccl::dataType<Dtype>::type,
                              ncclSum, comm_, stream_));
-    caffe_gpu_scal(size, (Dtype) 1.0 / Caffe::solver_count(),
+    this->device_->scal(size, (Dtype) 1.0 / Caffe::solver_count(),
                    blobs[0]->mutable_gpu_diff(), stream_);
   }
 }
@@ -256,7 +256,7 @@ void NCCL<Dtype>::on_gradients_ready() {
     NCCL_CHECK(ncclAllReduce(diff_, diff_, static_cast<int>(size_),
                              nccl::dataType<Dtype>::type, ncclSum, comm_,
                              cudaStreamDefault));
-    caffe_gpu_scal(static_cast<int>(size_),
+    this->device_->scal(static_cast<int>(size_),
                    (Dtype) 1.0 / Caffe::solver_count(), diff_);
   }
 }

@@ -54,12 +54,12 @@ class ContrastiveLossLayerTest : public MultiDeviceTest<TypeParam> {
   vector<Blob<Dtype>*> blob_top_vec_;
 };
 
-TYPED_TEST_CASE(ContrastiveLossLayerTest, TestDtypesAndDevices);
+TYPED_TEST_CASE(ContrastiveLossLayerTest, TestDtypesFloatAndDevices);
 
 TYPED_TEST(ContrastiveLossLayerTest, TestForward) {
   typedef typename TypeParam::Dtype Dtype;
   LayerParameter layer_param;
-  ContrastiveLossLayer<Dtype> layer(layer_param);
+  ContrastiveLossLayer<Dtype, Dtype, Dtype> layer(layer_param);
   layer.SetUp(this->blob_bottom_vec_, this->blob_top_vec_);
   layer.Forward(this->blob_bottom_vec_, this->blob_top_vec_);
   // manually compute to compare
@@ -77,18 +77,19 @@ TYPED_TEST(ContrastiveLossLayerTest, TestForward) {
     if (this->blob_bottom_y_->cpu_data()[i]) {  // similar pairs
       loss += dist_sq;
     } else {
-      Dtype dist = std::max<Dtype>(margin - sqrt(dist_sq), 0.0);
+      Dtype dist = fmax(Dtype(margin - std::sqrt(dist_sq)), Dtype(0.0));
       loss += dist*dist;
     }
   }
   loss /= static_cast<Dtype>(num) * Dtype(2);
-  EXPECT_NEAR(this->blob_top_loss_->cpu_data()[0], loss, 1e-5);
+  Dtype delta = 1e-5 * std::is_same<Dtype, half_fp>::value ? 100 : 1;
+  EXPECT_NEAR(this->blob_top_loss_->cpu_data()[0], loss, delta);
 }
 
 TYPED_TEST(ContrastiveLossLayerTest, TestGradient) {
   typedef typename TypeParam::Dtype Dtype;
   LayerParameter layer_param;
-  ContrastiveLossLayer<Dtype> layer(layer_param);
+  ContrastiveLossLayer<Dtype, Dtype, Dtype> layer(layer_param);
   layer.SetUp(this->blob_bottom_vec_, this->blob_top_vec_);
   GradientChecker<Dtype> checker(1e-2, 1e-2, 1701);
   // check the gradient for the first two bottom layers
@@ -102,7 +103,7 @@ TYPED_TEST(ContrastiveLossLayerTest, TestForwardLegacy) {
   typedef typename TypeParam::Dtype Dtype;
   LayerParameter layer_param;
   layer_param.mutable_contrastive_loss_param()->set_legacy_version(true);
-  ContrastiveLossLayer<Dtype> layer(layer_param);
+  ContrastiveLossLayer<Dtype, Dtype, Dtype> layer(layer_param);
   layer.SetUp(this->blob_bottom_vec_, this->blob_top_vec_);
   layer.Forward(this->blob_bottom_vec_, this->blob_top_vec_);
   // manually compute to compare
@@ -120,18 +121,19 @@ TYPED_TEST(ContrastiveLossLayerTest, TestForwardLegacy) {
     if (this->blob_bottom_y_->cpu_data()[i]) {  // similar pairs
       loss += dist_sq;
     } else {
-      loss += std::max(margin - dist_sq, Dtype(0.0));
+      loss += fmax(Dtype(margin - dist_sq), Dtype(0.0));
     }
   }
   loss /= static_cast<Dtype>(num) * Dtype(2);
-  EXPECT_NEAR(this->blob_top_loss_->cpu_data()[0], loss, 1e-5);
+  Dtype delta = 1e-5 * std::is_same<Dtype, half_fp>::value ? 100 : 1;
+  EXPECT_NEAR(this->blob_top_loss_->cpu_data()[0], loss, delta);
 }
 
 TYPED_TEST(ContrastiveLossLayerTest, TestGradientLegacy) {
   typedef typename TypeParam::Dtype Dtype;
   LayerParameter layer_param;
   layer_param.mutable_contrastive_loss_param()->set_legacy_version(true);
-  ContrastiveLossLayer<Dtype> layer(layer_param);
+  ContrastiveLossLayer<Dtype, Dtype, Dtype> layer(layer_param);
   layer.SetUp(this->blob_bottom_vec_, this->blob_top_vec_);
   GradientChecker<Dtype> checker(1e-2, 1e-2, 1701);
   // check the gradient for the first two bottom layers

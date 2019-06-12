@@ -2,18 +2,42 @@ syntax = "proto2";
 
 package caffe;
 
+enum DataType {
+	CAFFE_FLOAT = 0;
+	CAFFE_HALF = 1;
+	CAFFE_DOUBLE = 2;
+	CAFFE_INT8_QUANTIZED = 3;
+	CAFFE_INT16_QUANTIZED = 4;
+	CAFFE_INT32_QUANTIZED = 5;
+	CAFFE_INT64_QUANTIZED = 6;
+	CAFFE_PACKED_BINARY = 7;
+}
+
+enum Autotune {
+	// No autotuning; use default settings
+    CAFFE_AUTOTUNE_DISABLED = 0;
+    // Tune coarse grained (function level)
+    CAFFE_AUTOTUNE_FUNCTION = 1;
+    // Tune fine grained (function parameter level)
+    CAFFE_AUTOTUNE_FUNCTION_PARAMETER = 2;
+}
+
 // Specifies the shape (dimensions) of a Blob.
 message BlobShape {
   repeated int64 dim = 1 [packed = true];
 }
 
 message BlobProto {
+  optional DataType data_type = 13;
   optional BlobShape shape = 7;
+  optional BlobShape shape_stride = 10;
   repeated float data = 5 [packed = true];
   repeated float diff = 6 [packed = true];
   repeated double double_data = 8 [packed = true];
   repeated double double_diff = 9 [packed = true];
-
+  optional bytes packed_data = 11;
+  optional bytes packed_diff = 12;
+  
   // 4D dimensions -- deprecated.  Use "shape" instead.
   optional int64 num = 1 [default = 0];
   optional int64 channels = 2 [default = 0];
@@ -61,7 +85,38 @@ message FillerParameter {
   optional VarianceNorm variance_norm = 8 [default = FAN_IN];
 }
 
+enum QuantizerMode {
+  CAFFE_QUANT_PASSIVE = 0;
+  CAFFE_QUANT_OBSERVE = 1;
+  CAFFE_QUANT_PSEUDO = 2;
+}
+
+message QuantizerParameter {
+  optional string name = 1; // the quantizer name
+
+  optional int64 zone = 2;  // the zone index
+  optional DataType input_data_type = 3;
+  optional DataType output_data_type = 4;
+  
+  optional double observed_max = 5;
+  optional double observed_min = 6;
+  
+  optional double max_in = 7;
+  optional double min_in = 8;
+  optional double max_out = 9;
+  optional double min_out = 10;
+  
+  optional QuantizerMode mode = 11 [default = CAFFE_QUANT_PASSIVE];
+  
+  optional DataType pseudo_target_type = 13 [default = CAFFE_INT8_QUANTIZED];
+  optional bool pseudo_reset_observed = 14 [default = false];
+  
+  // Parameters for device abstraction
+  optional int64 device = 12 [default = -1];
+}
+
 message NetParameter {
+  optional DataType data_type = 42;
   optional string name = 1; // consider giving the network a name
   // DEPRECATED. See InputParameter. The input blobs to the network.
   repeated string input = 3;
@@ -88,6 +143,15 @@ message NetParameter {
   // The layers that make up the net.  Each of their configurations, including
   // connectivity and behavior, is specified as a LayerParameter.
   repeated LayerParameter layer = 100;  // ID 100 so layers are printed last.
+  
+  // The collected quantizer informations for each quantizer zone and name
+  repeated QuantizerParameter quantizer = 80;
+  
+  // Enable reduced memory inference
+  optional bool reduced_memory_inference = 81 [default = false];
+  
+  // Enable runtime autotuning
+  optional Autotune autotune = 82;
 
   // DEPRECATED: use 'layer' instead.
   repeated V1LayerParameter layers = 2;
@@ -96,7 +160,7 @@ message NetParameter {
 // NOTE
 // Update the next available ID when you add a new SolverParameter field.
 //
-// SolverParameter next available ID: 42 (last added: layer_wise_reduce)
+// SolverParameter next available ID: 44 (last added: data_type)
 message SolverParameter {
   //////////////////////////////////////////////////////////////////////////////
   // Specifying the train and test networks
@@ -108,10 +172,10 @@ message SolverParameter {
   // If more than one test net field is specified (e.g., both net and
   // test_net are specified), they will be evaluated in the field order given
   // above: (1) test_net_param, (2) test_net, (3) net_param/net.
-  // A test_iter must be specified for each test_net.
-  // A test_level and/or a test_stage may also be specified for each test_net.
+  // a test_iter must be specified for each test_net.
+  // a test_level and/or a test_stage may also be specified for each test_net.
   //////////////////////////////////////////////////////////////////////////////
-
+  optional DataType data_type = 43;
   // Proto filename for the train net, possibly combined with one or more
   // test nets.
   optional string net = 24;
@@ -148,7 +212,7 @@ message SolverParameter {
   // Display the loss averaged over the last average_loss iterations
   optional int64 average_loss = 33 [default = 1];
   optional int64 max_iter = 7; // the maximum number of iterations
-  // accumulate gradients over `iter_size` x `batch_size` instances
+  // accumulate gradients over `iter_size` X `batch_size` instances
   optional int64 iter_size = 36 [default = 1];
 
   // The learning rate decay policy. The currently implemented learning rate
@@ -184,7 +248,11 @@ message SolverParameter {
   optional float clip_gradients = 35 [default = -1];
 
   optional int64 snapshot = 14 [default = 0]; // The snapshot interval
-  optional string snapshot_prefix = 15; // The prefix for the snapshot.
+  // The prefix for the snapshot.
+  // If not set then is replaced by prototxt file path without extention.
+  // If is set to directory then is augmented by prototxt file name
+  // without extention.
+  optional string snapshot_prefix = 15;
   // whether to snapshot diff in the results or not. Snapshotting diff will help
   // debugging but the final protocol buffer size will be much larger.
   optional bool snapshot_diff = 16 [default = false];
@@ -200,7 +268,7 @@ message SolverParameter {
   }
   optional SolverMode solver_mode = 17 [default = GPU];
   // the device_id will that be used in GPU mode. Use device_id = 0 in default.
-  optional int64 device_id = 18 [default = 0];
+  optional int64 device = 18 [default = -1];
   // If non-negative, the seed with which the Solver will initialize the Caffe
   // random number generator -- useful for reproducible results. Otherwise,
   // (and by default) initialize using a seed derived from the system clock.
@@ -239,9 +307,19 @@ message SolverParameter {
 
   // Overlap compute and communication for data parallel training
   optional bool layer_wise_reduce = 41 [default = true];
+
+  // Path to caffemodel file(s) with pretrained weights to initialize finetuning.
+  // The same as command line --weights parameter for caffe train command.
+  // If command line --weights parameter if specified, it has higher priority
+  // and owerwrites this one(s).
+  // If --snapshot command line parameter is specified, this one(s) are ignored.
+  // If several model files are expected, they can be listed in a one 
+  // weights parameter separated by ',' (like in a command string) or
+  // in repeated weights parameters separately.
+  repeated string weights = 42;
 }
 
-// A message that stores the solver snapshots
+// a message that stores the solver snapshots
 message SolverState {
   optional int64 iter = 1; // The current iteration
   optional string learned_net = 2; // The file that stores the learned net.
@@ -258,6 +336,7 @@ message NetState {
   optional Phase phase = 1 [default = TEST];
   optional int64 level = 2 [default = 0];
   repeated string stage = 3;
+  optional QuantizerMode quantizer_mode = 4 [default = CAFFE_QUANT_PASSIVE];
 }
 
 message NetStateRule {
@@ -306,15 +385,27 @@ message ParamSpec {
 // NOTE
 // Update the next available ID when you add a new LayerParameter field.
 //
-// LayerParameter next available layer-specific ID: 147 (last added: recurrent_param)
+// LayerParameter next available layer-specific ID: 152 (last added: noise_param)
 message LayerParameter {
   optional string name = 1; // the layer name
   optional string type = 2; // the layer type
   repeated string bottom = 3; // the name of each bottom blob
   repeated string top = 4; // the name of each top blob
+  
+  optional DataType bottom_data_type = 12;
+  optional DataType compute_data_type = 13;
+  optional DataType top_data_type = 14;
 
   // The train / test phase for computation.
   optional Phase phase = 10;
+  
+  repeated QuantizerParameter bottom_quantizer = 16;
+  repeated QuantizerParameter top_quantizer = 17;
+  optional QuantizerParameter net_quantizer = 18;
+  repeated QuantizerParameter blobs_quantizer = 19;
+  
+  // Enable runtime autotuning
+  optional Autotune autotune = 20;
 
   // The amount of weight to assign each top blob in the objective.
   // Each layer assigns a default value, usually of either 0 or 1,
@@ -346,10 +437,12 @@ message LayerParameter {
   repeated NetStateRule include = 8;
   repeated NetStateRule exclude = 9;
   
-  // Parameters for Greentea
+  // Parameters for device abstraction
   optional int64 device = 95 [default = -1];
-  // Parameters for Splitnet
-  optional int64 buffer = 96 [default = -1];
+  
+  // Parameters for reduced memory inference
+  repeated int64 bottom_shared_index = 96;
+  repeated int64 top_shared_index = 97;
 
   // Parameters for data pre-processing.
   optional TransformationParameter transform_param = 100;
@@ -404,12 +497,15 @@ message LayerParameter {
   optional SoftmaxParameter softmax_param = 125;
   optional SPPParameter spp_param = 132;
   optional SliceParameter slice_param = 126;
+  optional SwishParameter swish_param = 147;
   optional TanHParameter tanh_param = 127;
   optional ThresholdParameter threshold_param = 128;
   optional TileParameter tile_param = 138;
   optional WindowDataParameter window_data_param = 129;
-  optional MergeCropParameter mergecrop_param = 147;
-  optional AffinityParameter affinity_param = 148;
+  optional MergeCropParameter mergecrop_param = 148;
+  optional AffinityParameter affinity_param = 149;
+  optional MOEParameter moe_param = 150;
+  optional NoiseParameter noise_param = 151;
 }
 
 // Message that stores parameters used to apply transformation
@@ -476,8 +572,8 @@ message AccuracyParameter {
   // The "label" axis of the prediction blob, whose argmax corresponds to the
   // predicted label -- may be negative to index from the end (e.g., -1 for the
   // last axis).  For example, if axis == 1 and the predictions are
-  // (N x C x H x W), the label blob is expected to contain N*H*W ground truth
-  // labels with integer values in {0, 1, ..., C-1}.
+  // (n X c X H X W), the label blob is expected to contain n*H*W ground truth
+  // labels with integer values in {0, 1, ..., c-1}.
   optional int64 axis = 2 [default = 1];
   
   // If specified, ignore instances with the given label.
@@ -526,6 +622,8 @@ message BatchNormParameter {
   // Small value to add to the variance estimate so that we don't divide by
   // zero.
   optional float eps = 3 [default = 1e-5];
+
+  optional bool fused_relu = 4 [ default = false ]; 
 }
 
 message BiasParameter {
@@ -612,11 +710,11 @@ message ConvolutionParameter {
   // The axis to interpret as "channels" when performing convolution.
   // Preceding dimensions are treated as independent inputs;
   // succeeding dimensions are treated as "spatial".
-  // With (N, C, H, W) inputs, and axis == 1 (the default), we perform
-  // N independent 2D convolutions, sliding C-channel (or (C/g)-channels, for
+  // With (n, c, H, W) inputs, and axis == 1 (the default), we perform
+  // n independent 2D convolutions, sliding c-channel (or (c/g)-channels, for
   // groups g>1) filters across the spatial axes (H, W) of the input.
-  // With (N, C, D, H, W) inputs, and axis == 1, we perform
-  // N independent 3D convolutions, sliding (C/g)-channels
+  // With (n, c, D, H, W) inputs, and axis == 1, we perform
+  // n independent 3D convolutions, sliding (c/g)-channels
   // filters across the spatial axes (D, H, W) of the input.
   optional int64 axis = 16 [default = 1];
 
@@ -626,6 +724,16 @@ message ConvolutionParameter {
   // implementation; for input blobs with num_axes != 2, this option is
   // ignored and the ND implementation will be used.)
   optional bool force_nd_im2col = 17 [default = false];
+
+  enum FuseType {
+    UNFUSED = 0;
+    FUSED_CONV_MAX_POOLING_RELU = 1;
+    FUSED_CONV_RELU = 2;
+    FUSED_CONV_ELTWISE_RELU = 3;
+  }
+  optional FuseType fuse_type = 19 [default = UNFUSED]; // Whether to fuse convolution with other layers
+  optional EltwiseParameter eltwise_param = 20;
+  optional ReLUParameter relu_param = 30;
 }
 
 message CropParameter {
@@ -639,7 +747,7 @@ message CropParameter {
   // If only one `offset` is set, then all dimensions are offset by this amount.
   // Otherwise, the number of offsets must equal the number of cropped axes to
   // shift the crop in each dimension accordingly.
-  // Note: standard dimensions are N,C,H,W so the default is a spatial crop,
+  // Note: standard dimensions are n,c,H,W so the default is a spatial crop,
   // and `axis` may be negative to index from the end (e.g., -1 for the last
   // axis).
   optional int32 axis = 1 [default = 2];
@@ -682,17 +790,18 @@ message DataParameter {
 
 message DropoutParameter {
   optional float dropout_ratio = 1 [default = 0.5]; // dropout ratio
+  optional bool scale_train = 2 [default = true];  // scale train or test phase
 }
 
 // DummyDataLayer fills any number of arbitrarily shaped blobs with random
 // (or constant) data generated by "Fillers" (see "message FillerParameter").
 message DummyDataParameter {
-  // This layer produces N >= 1 top blobs.  DummyDataParameter must specify 1 or N
-  // num, N channels, N height, and N width fields, and must specify 0, 1 or N
+  // This layer produces n >= 1 top blobs.  DummyDataParameter must specify 1 or n
+  // num, n channels, n height, and n width fields, and must specify 0, 1 or n
   // data_fillers.
   //
   // If 0 data_fillers are specified, ConstantFiller with a value of 0 is used.
-  // If 1 data_filler is specified, it is applied to all top blobs.  If N are
+  // If 1 data_filler is specified, it is applied to all top blobs.  If n are
   // specified, the ith is applied to the ith top blob.
   repeated FillerParameter data_filler = 1;
   repeated BlobShape shape = 6;
@@ -721,7 +830,7 @@ message EltwiseParameter {
 // Message that stores parameters used by ELULayer
 message ELUParameter {
   // Described in:
-  // Clevert, D.-A., Unterthiner, T., & Hochreiter, S. (2015). Fast and Accurate
+  // Clevert, D.-a., Unterthiner, T., & Hochreiter, S. (2015). Fast and Accurate
   // Deep Network Learning by Exponential Linear Units (ELUs). arXiv
   optional float alpha = 1 [default = 1];
 }
@@ -742,9 +851,9 @@ message EmbedParameter {
 
 // Message that stores parameters used by ExpLayer
 message ExpParameter {
-  // ExpLayer computes outputs y = base ^ (shift + scale * x), for base > 0.
+  // ExpLayer computes outputs Y = base ^ (shift + scale * X), for base > 0.
   // Or if base is set to the default (-1), base is set to e,
-  // so y = exp(shift + scale * x).
+  // so Y = exp(shift + scale * X).
   optional float base = 1 [default = -1.0];
   optional float scale = 2 [default = 1.0];
   optional float shift = 3 [default = 0.0];
@@ -824,6 +933,7 @@ message ImageDataParameter {
 message InfogainLossParameter {
   // Specify the infogain matrix source.
   optional string source = 1;
+  optional int32 axis = 2 [default = 1]; // axis of prob
 }
 
 message InnerProductParameter {
@@ -844,8 +954,8 @@ message InnerProductParameter {
 }
 
 message InputParameter {
-  // This layer produces N >= 1 top blob(s) to be assigned manually.
-  // Define N shapes to set a shape for each top.
+  // This layer produces n >= 1 top blob(s) to be assigned manually.
+  // Define n shapes to set a shape for each top.
   // Define 1 shape to set the same shape for every top.
   // Define no shape to defer to reshaping manually.
   repeated BlobShape shape = 1;
@@ -853,9 +963,9 @@ message InputParameter {
 
 // Message that stores parameters used by LogLayer
 message LogParameter {
-  // LogLayer computes outputs y = log_base(shift + scale * x), for base > 0.
+  // LogLayer computes outputs Y = log_base(shift + scale * X), for base > 0.
   // Or if base is set to the default (-1), base is set to e,
-  // so y = ln(shift + scale * x) = log_e(shift + scale * x)
+  // so Y = ln(shift + scale * X) = log_e(shift + scale * X)
   optional float base = 1 [default = -1.0];
   optional float scale = 2 [default = 1.0];
   optional float shift = 3 [default = 0.0];
@@ -878,6 +988,14 @@ message LRNParameter {
     CUDNN = 2;
   }
   optional Engine engine = 6 [default = DEFAULT];
+  enum FuseType {
+    UNFUSED = 0;
+    FUSED_POOL_MAX = 1;
+  }
+  optional FuseType fuse_type = 7 [default = UNFUSED]; // Whether to fuse convolution with other layers
+  optional PoolingParameter pooling_param = 8;
+  optional bool unit_test_mode = 9 [default = false]; 
+  optional bool unit_test_fuse_kernel = 10 [default = false];
 }
 
 message MemoryDataParameter {
@@ -939,7 +1057,7 @@ message PoolingParameter {
 }
 
 message PowerParameter {
-  // PowerLayer computes outputs y = (shift + scale * x) ^ power.
+  // PowerLayer computes outputs Y = (shift + scale * X) ^ power.
   optional float power = 1 [default = 1.0];
   optional float scale = 2 [default = 1.0];
   optional float shift = 3 [default = 0.0];
@@ -953,9 +1071,7 @@ message PythonParameter {
   // string, dictionary in Python dict format, JSON, etc. You may parse this
   // string in `setup` method and use it in `forward` and `backward`.
   optional string param_str = 3 [default = ''];
-  // Whether this PythonLayer is shared among worker solvers during data parallelism.
-  // If true, each worker solver sequentially run forward from this layer.
-  // This value should be set true if you are using it as a data layer.
+  // DEPRECATED
   optional bool share_in_parallel = 4 [default = false];
 }
 
@@ -978,6 +1094,22 @@ message RecurrentParameter {
   optional bool expose_hidden = 5 [default = false];
 }
 
+message MOEParameter {
+  optional NetParameter gating_net = 1;
+  repeated NetParameter expert_net = 2;
+  repeated int64 expert_instances = 3;
+  optional int64 select_experts = 4;
+  optional bool full_forward = 6 [default = false];
+  
+  enum BottomMapping {
+  	GATING = 1;
+  	EXPERT = 2;
+  	GATING_AND_EXPERT = 3;
+  }
+  
+  repeated BottomMapping map_bottom = 5;
+}
+
 // Message that stores parameters used by ReductionLayer
 message ReductionParameter {
   enum ReductionOp {
@@ -992,7 +1124,7 @@ message ReductionParameter {
   // The first axis to reduce to a scalar -- may be negative to index from the
   // end (e.g., -1 for the last axis).
   // (Currently, only reduction along ALL "tail" axes is supported; reduction
-  // of axis M through N, where N < num_axes - 1, is unsupported.)
+  // of axis m through n, where n < num_axes - 1, is unsupported.)
   // Suppose we have an n-axis bottom Blob with shape:
   //     (d0, d1, d2, ..., d(m-1), dm, d(m+1), ..., d(n-1)).
   // If axis == m, the output Blob will have shape
@@ -1011,7 +1143,7 @@ message ReductionParameter {
 message ReLUParameter {
   // Allow non-zero slope for negative inputs to speed up optimization
   // Described in:
-  // Maas, A. L., Hannun, A. Y., & Ng, A. Y. (2013). Rectifier nonlinearities
+  // Maas, a. L., Hannun, a. Y., & Ng, a. Y. (2013). Rectifier nonlinearities
   // improve neural network acoustic models. In ICML Workshop on Deep Learning
   // for Audio, Speech, and Language Processing.
   optional float negative_slope = 1 [default = 0];
@@ -1028,16 +1160,16 @@ message ReshapeParameter {
   // the corresponding dimension from the bottom layer is used (unchanged).
   // Exactly one dimension may be set to -1, in which case its value is
   // inferred from the count of the bottom blob and the remaining dimensions.
-  // For example, suppose we want to reshape a 2D blob "input" with shape 2 x 8:
+  // For example, suppose we want to reshape a 2D blob "input" with shape 2 X 8:
   //
   //   layer {
   //     type: "Reshape" bottom: "input" top: "output"
   //     reshape_param { ... }
   //   }
   //
-  // If "input" is 2D with shape 2 x 8, then the following reshape_param
+  // If "input" is 2D with shape 2 X 8, then the following reshape_param
   // specifications are all equivalent, producing a 3D blob "output" with shape
-  // 2 x 2 x 4:
+  // 2 X 2 X 4:
   //
   //   reshape_param { shape { dim:  2  dim: 2  dim:  4 } }
   //   reshape_param { shape { dim:  0  dim: 2  dim:  4 } }
@@ -1056,9 +1188,9 @@ message ReshapeParameter {
   // reshape after the last axis, including nothing in the reshape,
   // -2 to include only the last axis, etc.).
   //
-  // For example, suppose "input" is a 2D blob with shape 2 x 8.
+  // For example, suppose "input" is a 2D blob with shape 2 X 8.
   // Then the following ReshapeLayer specifications are all equivalent,
-  // producing a blob "output" with shape 2 x 2 x 4:
+  // producing a blob "output" with shape 2 X 2 X 4:
   //
   //   reshape_param { shape { dim: 2  dim: 2  dim: 4 } }
   //   reshape_param { shape { dim: 2  dim: 4 } axis:  1 }
@@ -1070,15 +1202,15 @@ message ReshapeParameter {
   // num_axes may also be -1, the default, to include all remaining axes
   // (starting from axis).
   //
-  // For example, suppose "input" is a 2D blob with shape 2 x 8.
+  // For example, suppose "input" is a 2D blob with shape 2 X 8.
   // Then the following ReshapeLayer specifications are equivalent,
-  // producing a blob "output" with shape 1 x 2 x 8.
+  // producing a blob "output" with shape 1 X 2 X 8.
   //
   //   reshape_param { shape { dim:  1  dim: 2  dim:  8 } }
   //   reshape_param { shape { dim:  1  dim: 2  }  num_axes: 1 }
   //   reshape_param { shape { dim:  1  }  num_axes: 0 }
   //
-  // On the other hand, these would produce output blob shape 2 x 1 x 8:
+  // On the other hand, these would produce output blob shape 2 X 1 X 8:
   //
   //   reshape_param { shape { dim: 2  dim: 1  dim: 8  }  }
   //   reshape_param { shape { dim: 1 }  axis: 1  num_axes: 0 }
@@ -1157,6 +1289,15 @@ message SoftmaxParameter {
   // from the end (e.g., -1 for the last axis).
   // Any other axes will be evaluated as independent softmaxes.
   optional int64 axis = 2 [default = 1];
+}
+
+// Message that stores parameters used by SwishLayer
+message SwishParameter {
+  // Beta parameter for the Swish activation function
+  // Described in:
+  // Prajit Ramachandran, Barret Zoph, Quoc V. Le. (2017). Searching for
+  // Activation Functions. https://arxiv.org/abs/1710.05941v2
+  optional float beta = 1 [default = 1];
 }
 
 message TanHParameter {
@@ -1420,7 +1561,7 @@ message V0LayerParameter {
 }
 
 message PReLUParameter {
-  // Parametric ReLU described in K. He et al, Delving Deep into Rectifiers:
+  // Parametric ReLU described in k. He et al, Delving Deep into Rectifiers:
   // Surpassing Human-Level Performance on ImageNet Classification, 2015.
 
   // Initial value of a_i. Default is a_i=0.25 for all i.
@@ -1442,8 +1583,18 @@ message MergeCropParameter {
   }
   optional MergeOp operation = 1 [default = STACK];
   
-  // Forward and backward enable/disable
+  // Forward and backward enable/disableN
   // Defined once per bottom blob
   repeated bool forward = 2;
   repeated bool backward = 3;
+}
+
+message NoiseParameter {
+  optional float mu = 1 [default = 0.0];
+  optional float sigma = 2 [default = 1.0];
+}
+
+message TuningSet {
+  repeated string name = 1;
+  repeated int64 value = 2;
 }

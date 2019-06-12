@@ -1,14 +1,49 @@
+# generate macro headers
+caffe_prebuild_macros_py(${macro_gen_folder})
+list(APPEND pre_build_srcs ${macro_gen_folder}/macros.hpp)
+
+caffe_prebuild_layer_creator_py(${layer_creator_gen_folder})
+list(APPEND pre_build_srcs ${layer_creator_gen_folder}/layer_creator.hpp)
+
+caffe_prebuild_blob_creator_py(${blob_creator_gen_folder})
+list(APPEND pre_build_srcs ${blob_creator_gen_folder}/blob_creator.hpp)
+
+caffe_prebuild_quantizer_creator_py(${quantizer_creator_gen_folder})
+list(APPEND pre_build_srcs ${quantizer_creator_gen_folder}/quantizer_creator.hpp)
+
+caffe_prebuild_test_macros_py(${test_macros_gen_folder})
+list(APPEND pre_build_srcs ${test_macros_gen_folder}/test_macros.hpp)
+
+if(USE_CUDA)
+  set(CUDA_NVRTC_HEADERS "")
+  list(APPEND CUDA_NVRTC_HEADERS "${CUDA_TOOLKIT_INCLUDE}/cuda_fp16.h")
+  list(APPEND CUDA_NVRTC_HEADERS "${CUDA_TOOLKIT_INCLUDE}/cuda_fp16.hpp")
+  set(CUDA_NVRTC_SYSTEM_HEADERS "")
+  set(CUDA_NVRTC_EXCLUDE_HEADERS "utility")
+  caffe_cuda_nvrtc_header_loader_py(${cuda_nvrtc_header_gen_folder}
+								  "${CUDA_NVRTC_HEADERS}"
+								  "${CMAKE_CXX_COMPILER}"
+								  "${CUDA_NVRTC_SYSTEM_HEADERS}"
+								  "${CUDA_NVRTC_EXCLUDE_HEADERS}")
+  list(APPEND pre_build_srcs ${cuda_nvrtc_header_gen_folder}/cuda_nvrtc_headers.hpp)
+endif()
+
+add_library(pre_build STATIC ${pre_build_srcs})
+							 
+caffe_default_properties(pre_build)
+set_target_properties(pre_build PROPERTIES LINKER_LANGUAGE CXX)
+
 # generate protobuf sources
 file(GLOB proto_files proto/*.proto)
 caffe_protobuf_generate_cpp_py(${proto_gen_folder} proto_srcs proto_hdrs proto_python ${proto_files})
 
 # include python files either to force generation
-add_library(proto STATIC ${proto_hdrs} ${proto_srcs} ${proto_python})
-caffe_default_properties(proto)
-#target_link_libraries(proto PUBLIC ${PROTOBUF_LIBRARIES})
-#target_include_directories(proto PUBLIC ${PROTOBUF_INCLUDE_DIR})
+add_library(caffeproto STATIC ${proto_hdrs} ${proto_srcs} ${proto_python})
+caffe_default_properties(caffeproto)
+#target_link_libraries(caffeproto PUBLIC ${PROTOBUF_LIBRARIES})
+#target_include_directories(caffeproto PUBLIC ${PROTOBUF_INCLUDE_DIR})
 
-list(INSERT Caffe_LINKER_LIBS 0 PUBLIC proto) # note, crucial to prepend!
+list(INSERT Caffe_LINKER_LIBS 0 PUBLIC caffeproto) # note, crucial to prepend!
 
 # --[ Caffe library
 
@@ -91,19 +126,23 @@ if(MSVC)
   # Disable Boost autolinking for consuming projects
   target_compile_definitions(caffe PUBLIC -DBOOST_ALL_NO_LIB)
 endif()
+if(MSVC AND USE_NCCL)
+  add_dependencies(caffe nccl)
+endif()
 
 configure_file(${caffe_export_hdr_in} ${caffe_export_hdr})
 
 # ---[ Tests
- add_subdirectory(test)
+add_subdirectory(test)
 
 # ---[ Install
-install(DIRECTORY ${Caffe_INCLUDE_DIR}/caffe DESTINATION include)
-install(FILES ${proto_hdrs} DESTINATION include/caffe/proto)
-install(TARGETS caffe proto EXPORT CaffeTargets DESTINATION lib)
+install(DIRECTORY ${Caffe_INCLUDE_DIR}/caffe DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+install(FILES ${proto_hdrs} DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/caffe/proto)
+install(TARGETS caffe caffeproto EXPORT CaffeTargets DESTINATION ${CMAKE_INSTALL_LIBDIR})
 if(MSVC AND NOT BUILD_SHARED_LIBS)
-  install(FILES ${caffe_export_hdr} ${caffe_symbols_hdr} DESTINATION include/caffe)
+  install(FILES ${caffe_export_hdr} ${caffe_symbols_hdr} DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/caffe)
 endif()
+
 
 file(WRITE ${PROJECT_BINARY_DIR}/__init__.py)
 list(APPEND proto_python ${PROJECT_BINARY_DIR}/__init__.py)

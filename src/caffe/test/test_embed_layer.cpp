@@ -33,7 +33,7 @@ class EmbedLayerTest : public MultiDeviceTest<TypeParam> {
   vector<Blob<Dtype>*> blob_top_vec_;
 };
 
-TYPED_TEST_CASE(EmbedLayerTest, TestDtypesAndDevices);
+TYPED_TEST_CASE(EmbedLayerTest, TestDtypesFloatAndDevices);
 
 TYPED_TEST(EmbedLayerTest, TestSetUp) {
   typedef typename TypeParam::Dtype Dtype;
@@ -41,7 +41,7 @@ TYPED_TEST(EmbedLayerTest, TestSetUp) {
   EmbedParameter* embed_param = layer_param.mutable_embed_param();
   embed_param->set_num_output(10);
   embed_param->set_input_dim(5);
-  shared_ptr<EmbedLayer<Dtype> > layer(new EmbedLayer<Dtype>(layer_param));
+  shared_ptr<EmbedLayer<Dtype, Dtype, Dtype> > layer(new EmbedLayer<Dtype, Dtype, Dtype>(layer_param));
   layer->SetUp(this->blob_bottom_vec_, this->blob_top_vec_);
   ASSERT_EQ(this->blob_top_->num_axes(), 5);
   EXPECT_EQ(this->blob_top_->shape(0), 4);
@@ -63,7 +63,7 @@ TYPED_TEST(EmbedLayerTest, TestForward) {
   embed_param->mutable_weight_filler()->set_min(-10);
   embed_param->mutable_weight_filler()->set_max(10);
   embed_param->set_bias_term(false);
-  shared_ptr<EmbedLayer<Dtype> > layer(new EmbedLayer<Dtype>(layer_param));
+  shared_ptr<EmbedLayer<Dtype, Dtype, Dtype> > layer(new EmbedLayer<Dtype, Dtype, Dtype>(layer_param));
   layer->SetUp(this->blob_bottom_vec_, this->blob_top_vec_);
   ASSERT_EQ(1, layer->blobs().size());
   vector<int_tp> weight_shape(2);
@@ -103,7 +103,7 @@ TYPED_TEST(EmbedLayerTest, TestForwardWithBias) {
   embed_param->mutable_weight_filler()->set_max(10);
   embed_param->mutable_bias_filler()->CopyFrom(embed_param->weight_filler());
   embed_param->set_bias_term(true);
-  shared_ptr<EmbedLayer<Dtype> > layer(new EmbedLayer<Dtype>(layer_param));
+  shared_ptr<EmbedLayer<Dtype, Dtype, Dtype> > layer(new EmbedLayer<Dtype, Dtype, Dtype>(layer_param));
   layer->SetUp(this->blob_bottom_vec_, this->blob_top_vec_);
   ASSERT_EQ(2, layer->blobs().size());
   vector<int_tp> weight_shape(2);
@@ -124,8 +124,8 @@ TYPED_TEST(EmbedLayerTest, TestForwardWithBias) {
     top_offset[4] = 0;
     bias_offset[0] = 0;
     for (int_tp j = 0; j < kNumOutput; ++j) {
-      EXPECT_FLOAT_EQ(layer->blobs()[0]->data_at(weight_offset) +
-                layer->blobs()[1]->data_at(bias_offset),
+      EXPECT_FLOAT_EQ(Dtype(layer->blobs()[0]->data_at(weight_offset) +
+                layer->blobs()[1]->data_at(bias_offset)),
                 this->blob_top_->data_at(top_offset));
       ++top_offset[4];
       ++weight_offset[1];
@@ -137,9 +137,19 @@ TYPED_TEST(EmbedLayerTest, TestForwardWithBias) {
 TYPED_TEST(EmbedLayerTest, TestGradient) {
   typedef typename TypeParam::Dtype Dtype;
   // Skip the test on unsupported OpenCL devices with double
-  if (!Caffe::GetDefaultDevice()->
-        CheckCapability("cl_khr_int64_base_atomics")
+  if (!(Caffe::GetDefaultDevice()->
+          CheckCapability(caffe::DEVICE_INT64_GLOBAL_ATOMICS_SUPPORT) ||
+        Caffe::GetDefaultDevice()->
+          CheckCapability(caffe::DEVICE_INT64_GLOBAL_EXTENDED_ATOMICS_SUPPORT))
         && is_same<Dtype, double>::value) {
+    return;
+  }
+  if (!(Caffe::GetDefaultDevice()->
+          CheckCapability(caffe::DEVICE_INT32_GLOBAL_ATOMICS_SUPPORT) ||
+        Caffe::GetDefaultDevice()->
+          CheckCapability(caffe::DEVICE_INT32_GLOBAL_EXTENDED_ATOMICS_SUPPORT))
+        && (is_same<Dtype, float>::value ||
+            is_same<Dtype, half_fp>::value)) {
     return;
   }
   LayerParameter layer_param;
@@ -150,7 +160,7 @@ TYPED_TEST(EmbedLayerTest, TestGradient) {
   embed_param->mutable_weight_filler()->set_type("uniform");
   embed_param->mutable_weight_filler()->set_min(-10);
   embed_param->mutable_weight_filler()->set_max(10);
-  EmbedLayer<Dtype> layer(layer_param);
+  EmbedLayer<Dtype, Dtype, Dtype> layer(layer_param);
   GradientChecker<Dtype> checker(1e-2, 1e-3);
   this->blob_bottom_->mutable_cpu_data()[0] = 4;
   this->blob_bottom_->mutable_cpu_data()[1] = 2;
@@ -163,9 +173,19 @@ TYPED_TEST(EmbedLayerTest, TestGradient) {
 TYPED_TEST(EmbedLayerTest, TestGradientWithBias) {
   typedef typename TypeParam::Dtype Dtype;
   // Skip the test on unsupported OpenCL devices with double
-  if (!Caffe::GetDefaultDevice()->
-        CheckCapability("cl_khr_int64_base_atomics")
+  if (!(Caffe::GetDefaultDevice()->
+          CheckCapability(caffe::DEVICE_INT64_GLOBAL_ATOMICS_SUPPORT) ||
+        Caffe::GetDefaultDevice()->
+          CheckCapability(caffe::DEVICE_INT64_GLOBAL_EXTENDED_ATOMICS_SUPPORT))
         && is_same<Dtype, double>::value) {
+    return;
+  }
+  if (!(Caffe::GetDefaultDevice()->
+          CheckCapability(caffe::DEVICE_INT32_GLOBAL_ATOMICS_SUPPORT) ||
+        Caffe::GetDefaultDevice()->
+          CheckCapability(caffe::DEVICE_INT32_GLOBAL_EXTENDED_ATOMICS_SUPPORT))
+        && (is_same<Dtype, float>::value ||
+            is_same<Dtype, half_fp>::value)) {
     return;
   }
   LayerParameter layer_param;
@@ -177,7 +197,7 @@ TYPED_TEST(EmbedLayerTest, TestGradientWithBias) {
   embed_param->mutable_weight_filler()->set_min(-10);
   embed_param->mutable_weight_filler()->set_max(10);
   embed_param->mutable_bias_filler()->CopyFrom(embed_param->weight_filler());
-  EmbedLayer<Dtype> layer(layer_param);
+  EmbedLayer<Dtype, Dtype, Dtype> layer(layer_param);
   GradientChecker<Dtype> checker(1e-2, 1e-3);
   this->blob_bottom_->mutable_cpu_data()[0] = 4;
   this->blob_bottom_->mutable_cpu_data()[1] = 2;

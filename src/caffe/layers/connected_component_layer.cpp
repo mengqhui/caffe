@@ -14,8 +14,8 @@ namespace caffe {
 
 // Derived from
 // http://nghiaho.com/uploads/code/opencv_connected_component/blob.cpp
-template<typename Dtype>
-cv::Mat ConnectedComponentLayer<Dtype>::FindBlobs(int maxlabel,
+template<typename Dtype, typename MItype, typename MOtype>
+cv::Mat ConnectedComponentLayer<Dtype, MItype, MOtype>::FindBlobs(int maxlabel,
                                                   const cv::Mat &input) {
   // Fill the label_image with the blobs
   cv::Mat label_image;
@@ -24,37 +24,38 @@ cv::Mat ConnectedComponentLayer<Dtype>::FindBlobs(int maxlabel,
   int label_count = maxlabel + 1;
 
   // Segment into label numbers higher than the original label numbers
-  for (int y = 0; y < label_image.rows; y++) {
-    int *row = reinterpret_cast<int*>(label_image.ptr(y));
-    for (int x = 0; x < label_image.cols; x++) {
+  for (int Y = 0; Y < label_image.rows; Y++) {
+    int *row = reinterpret_cast<int*>(label_image.ptr(Y));
+    for (int X = 0; X < label_image.cols; X++) {
       // Skip background and already labeled areas
-      if (row[x] > maxlabel || row[x] == 0) {
+      if (row[X] > maxlabel || row[X] == 0) {
         continue;
       }
       cv::Rect rect;
-      cv::floodFill(label_image, cv::Point(x, y), label_count, &rect, 0, 0, 4);
+      cv::floodFill(label_image, cv::Point(X, Y), label_count, &rect, 0, 0, 4);
       label_count++;
     }
   }
   return label_image;
 }
 
-template<typename Dtype>
-void ConnectedComponentLayer<Dtype>::LayerSetUp(
-              const vector<Blob<Dtype>*>& bottom,
-              const vector<Blob<Dtype>*>& top) {
+template<typename Dtype, typename MItype, typename MOtype>
+void ConnectedComponentLayer<Dtype, MItype, MOtype>::LayerSetUp(
+              const vector<Blob<MItype>*>& bottom,
+              const vector<Blob<MOtype>*>& top) {
+  this->InitializeQuantizers(bottom, top);
 }
 
-template<typename Dtype>
-void ConnectedComponentLayer<Dtype>::Reshape(const vector<Blob<Dtype>*>& bottom,
-                                    const vector<Blob<Dtype>*>& top) {
+template<typename Dtype, typename MItype, typename MOtype>
+void ConnectedComponentLayer<Dtype, MItype, MOtype>::Reshape(
+    const vector<Blob<MItype>*>& bottom, const vector<Blob<MOtype>*>& top) {
   top[0]->ReshapeLike(*bottom[0]);
 }
 
-template<typename Dtype>
-void ConnectedComponentLayer<Dtype>::Forward_cpu(
-    const vector<Blob<Dtype>*>& bottom,
-    const vector<Blob<Dtype>*>& top) {
+template<typename Dtype, typename MItype, typename MOtype>
+void ConnectedComponentLayer<Dtype, MItype, MOtype>::Forward_cpu(
+    const vector<Blob<MItype>*>& bottom,
+    const vector<Blob<MOtype>*>& top) {
 
   const Dtype* bottom_data = bottom[0]->cpu_data();
   Dtype* top_data = top[0]->mutable_cpu_data();
@@ -63,38 +64,46 @@ void ConnectedComponentLayer<Dtype>::Forward_cpu(
 
   for (int_tp nc = 0; nc < bottom[0]->num() * bottom[0]->channels(); ++nc) {
     int maxlabel = 0;
-    for (int_tp y = 0; y < bottom[0]->height(); ++y) {
-      for (int_tp x = 0; x < bottom[0]->width(); ++x) {
+    for (int_tp Y = 0; Y < bottom[0]->height(); ++Y) {
+      for (int_tp X = 0; X < bottom[0]->width(); ++X) {
         int val = bottom_data[nc * bottom[0]->width() * bottom[0]->height()
-                                          + bottom[0]->width() * y + x];
+                                          + bottom[0]->width() * Y + X];
         if (val > maxlabel) {
           maxlabel = val;
         }
-        img.at<unsigned char>(y, x) = val;
+        img.at<unsigned char>(Y, X) = val;
       }
     }
     cv::Mat seg = FindBlobs(maxlabel, img);
-#pragma omp parallel for
-    for (int_tp y = 0; y < seg.rows; ++y) {
-      for (int_tp x = 0; x < seg.cols; ++x) {
+    for (int_tp Y = 0; Y < seg.rows; ++Y) {
+      for (int_tp X = 0; X < seg.cols; ++X) {
         top_data[nc * bottom[0]->width() * bottom[0]->height()
-            + bottom[0]->width() * y + x] = seg.at<int>(y, x);
+            + bottom[0]->width() * Y + X] = seg.at<int>(Y, X);
       }
     }
   }
 }
 
-template<typename Dtype>
-void ConnectedComponentLayer<Dtype>::Backward_cpu(
-    const vector<Blob<Dtype>*>& top,
+template<typename Dtype, typename MItype, typename MOtype>
+void ConnectedComponentLayer<Dtype, MItype, MOtype>::Backward_cpu(
+    const vector<Blob<MOtype>*>& top,
     const vector<bool>& propagate_down,
-    const vector<Blob<Dtype>*>& bottom) {
+    const vector<Blob<MItype>*>& bottom) {
   // Nothing to do, don't backpropagate to labels
   return;
 }
 
-INSTANTIATE_CLASS(ConnectedComponentLayer);
+INSTANTIATE_CLASS_3T_GUARDED(ConnectedComponentLayer,
+                             (half_fp), (half_fp), (half_fp));
+INSTANTIATE_CLASS_3T_GUARDED(ConnectedComponentLayer,
+                             (float), (float), (float));
+INSTANTIATE_CLASS_3T_GUARDED(ConnectedComponentLayer,
+                             (double), (double), (double));
+
 REGISTER_LAYER_CLASS(ConnectedComponent);
+REGISTER_LAYER_CLASS_INST(ConnectedComponent, (half_fp), (half_fp), (half_fp));
+REGISTER_LAYER_CLASS_INST(ConnectedComponent, (float), (float), (float));
+REGISTER_LAYER_CLASS_INST(ConnectedComponent, (double), (double), (double));
 
 }  // namespace caffe
 #endif  // USE_OPENCV

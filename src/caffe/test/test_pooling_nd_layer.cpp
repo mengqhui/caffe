@@ -64,7 +64,7 @@ class PoolingNDLayerTest : public GPUDeviceTest<TypeParam> {
 
     pooling_param->set_axis(1);
 
-    PoolingLayer<TypeParam> layer(layer_param);
+    PoolingLayer<TypeParam, TypeParam, TypeParam> layer(layer_param);
     layer.SetUp(this->blob_bottom_vec_, this->blob_top_vec_);
 
     int_tp d = blob_bottom_->shape(2);
@@ -73,7 +73,7 @@ class PoolingNDLayerTest : public GPUDeviceTest<TypeParam> {
 
     TypeParam *bottom_data = blob_bottom_->mutable_cpu_data();
 
-    std::vector<TypeParam> maxval(8 * 8);
+    vector<TypeParam> maxval(8 * 8);
 
     for (int_tp cd = 0; cd < d; ++cd) {
       for (int_tp ch = 0; ch < h; ++ch) {
@@ -113,7 +113,7 @@ class PoolingNDLayerTest : public GPUDeviceTest<TypeParam> {
 
     pooling_param->set_axis(1);
 
-    PoolingLayer<TypeParam> layer(layer_param);
+    PoolingLayer<TypeParam, TypeParam, TypeParam> layer(layer_param);
     layer.SetUp(this->blob_bottom_vec_, this->blob_top_vec_);
 
     int_tp d = blob_bottom_->shape(2);
@@ -122,7 +122,7 @@ class PoolingNDLayerTest : public GPUDeviceTest<TypeParam> {
 
     TypeParam *bottom_data = blob_bottom_->mutable_cpu_data();
 
-    std::vector<TypeParam> maxval(8);
+    vector<TypeParam> maxval(8);
 
     for (int_tp cd = 0; cd < d; ++cd) {
       for (int_tp ch = 0; ch < h; ++ch) {
@@ -143,7 +143,7 @@ class PoolingNDLayerTest : public GPUDeviceTest<TypeParam> {
       top_diff[i] = maxval[i];
     }
 
-    std::vector<bool> prop_down;
+    vector<bool> prop_down;
     prop_down.push_back(true);
 
     layer.Backward(this->blob_top_vec_, prop_down, this->blob_bottom_vec_);
@@ -171,7 +171,7 @@ class PoolingNDLayerTest : public GPUDeviceTest<TypeParam> {
   vector<Blob<TypeParam>*> blob_top_vec_;
 };
 
-TYPED_TEST_CASE(PoolingNDLayerTest, TestDtypes);
+TYPED_TEST_CASE(PoolingNDLayerTest, TestDtypesFloat);
 
 TYPED_TEST(PoolingNDLayerTest, TestSetup) {
   LayerParameter layer_param;
@@ -189,7 +189,7 @@ TYPED_TEST(PoolingNDLayerTest, TestSetup) {
   pooling_param->set_pool(PoolingParameter_PoolMethod_MAX);
 
 
-  PoolingLayer<TypeParam> layer(layer_param);
+  PoolingLayer<TypeParam, TypeParam, TypeParam> layer(layer_param);
   layer.SetUp(this->blob_bottom_vec_, this->blob_top_vec_);
 
   EXPECT_EQ(2, this->blob_top_->shape(2));

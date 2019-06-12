@@ -13,18 +13,18 @@ namespace caffe {
 /**
  * @brief Merges and crops feature maps for U-Net architectures.
  */
-template<typename Dtype>
-class MergeCropLayer : public Layer<Dtype> {
+template<typename Dtype, typename MItype, typename MOtype>
+class MergeCropLayer : public Layer<Dtype, MItype, MOtype> {
  public:
   explicit MergeCropLayer(const LayerParameter& param)
-      : Layer<Dtype>(param) {
+      : Layer<Dtype, MItype, MOtype>(param) {
   }
 
-  virtual void LayerSetUp(const vector<Blob<Dtype>*>& bottom,
-                          const vector<Blob<Dtype>*>& top);
+  virtual void LayerSetUp(const vector<Blob<MItype>*>& bottom,
+                          const vector<Blob<MOtype>*>& top);
 
-  virtual void Reshape(const vector<Blob<Dtype>*>& bottom,
-                       const vector<Blob<Dtype>*>& top);
+  virtual void Reshape(const vector<Blob<MItype>*>& bottom,
+                       const vector<Blob<MOtype>*>& top);
 
   virtual inline int_tp ExactNumBottomBlobs() const {
     return 2;
@@ -35,20 +35,22 @@ class MergeCropLayer : public Layer<Dtype> {
   }
 
  protected:
-  virtual void Forward_cpu(const vector<Blob<Dtype>*>& bottom,
-                           const vector<Blob<Dtype>*>& top);
-  virtual void Forward_gpu(const vector<Blob<Dtype>*>& bottom,
-                           const vector<Blob<Dtype>*>& top);
-  virtual void Backward_cpu(const vector<Blob<Dtype>*>& top,
+  virtual void Forward_cpu(const vector<Blob<MItype>*>& bottom,
+                           const vector<Blob<MOtype>*>& top);
+  virtual void Forward_gpu(const vector<Blob<MItype>*>& bottom,
+                           const vector<Blob<MOtype>*>& top);
+  virtual void Backward_cpu(const vector<Blob<MOtype>*>& top,
                             const vector<bool>& propagate_down,
-                            const vector<Blob<Dtype>*>& bottom);
-  virtual void Backward_gpu(const vector<Blob<Dtype>*>& top,
+                            const vector<Blob<MItype>*>& bottom);
+  virtual void Backward_gpu(const vector<Blob<MOtype>*>& top,
                             const vector<bool>& propagate_down,
-                            const vector<Blob<Dtype>*>& bottom);
+                            const vector<Blob<MItype>*>& bottom);
+
+  void GenerateProgram();
 
  private:
-  vector<int_tp> forward_;
-  vector<int_tp> backward_;
+  vector<bool> forward_;
+  vector<bool> backward_;
   Blob<int_tp> shape_a_;
   Blob<int_tp> shape_b_;
   MergeCropParameter_MergeOp op_;

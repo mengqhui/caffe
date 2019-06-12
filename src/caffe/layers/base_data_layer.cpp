@@ -11,15 +11,16 @@
 
 namespace caffe {
 
-template <typename Dtype>
-BaseDataLayer<Dtype>::BaseDataLayer(const LayerParameter& param)
-    : Layer<Dtype>(param),
+template<typename Dtype, typename MItype, typename MOtype>
+BaseDataLayer<Dtype, MItype, MOtype>::BaseDataLayer(const LayerParameter& param)
+    : Layer<Dtype, MItype, MOtype>(param),
       transform_param_(param.transform_param()) {
 }
 
-template <typename Dtype>
-void BaseDataLayer<Dtype>::LayerSetUp(const vector<Blob<Dtype>*>& bottom,
-      const vector<Blob<Dtype>*>& top) {
+template<typename Dtype, typename MItype, typename MOtype>
+void BaseDataLayer<Dtype, MItype, MOtype>::LayerSetUp(
+    const vector<Blob<MItype>*>& bottom,
+    const vector<Blob<MOtype>*>& top) {
   if (top.size() == 1) {
     output_labels_ = false;
   } else {
@@ -31,12 +32,13 @@ void BaseDataLayer<Dtype>::LayerSetUp(const vector<Blob<Dtype>*>& bottom,
   data_transformer_->InitRand();
   // The subclasses should setup the size of bottom and top
   DataLayerSetUp(bottom, top);
+  this->InitializeQuantizers(bottom, top);
 }
 
-template <typename Dtype>
-BasePrefetchingDataLayer<Dtype>::BasePrefetchingDataLayer(
+template<typename Dtype, typename MItype, typename MOtype>
+BasePrefetchingDataLayer<Dtype, MItype, MOtype>::BasePrefetchingDataLayer(
     const LayerParameter& param)
-    : BaseDataLayer<Dtype>(param),
+    : BaseDataLayer<Dtype, MItype, MOtype>(param),
       prefetch_(param.data_param().prefetch()),
       prefetch_free_(), prefetch_full_(), prefetch_current_() {
   for (int i = 0; i < prefetch_.size(); ++i) {
@@ -45,10 +47,11 @@ BasePrefetchingDataLayer<Dtype>::BasePrefetchingDataLayer(
   }
 }
 
-template <typename Dtype>
-void BasePrefetchingDataLayer<Dtype>::LayerSetUp(
-    const vector<Blob<Dtype>*>& bottom, const vector<Blob<Dtype>*>& top) {
-  BaseDataLayer<Dtype>::LayerSetUp(bottom, top);
+template<typename Dtype, typename MItype, typename MOtype>
+void BasePrefetchingDataLayer<Dtype, MItype, MOtype>::LayerSetUp(
+    const vector<Blob<MItype>*>& bottom,
+    const vector<Blob<MOtype>*>& top) {
+  BaseDataLayer<Dtype, MItype, MOtype>::LayerSetUp(bottom, top);
 
   // Before starting the prefetch thread, we make cpu_data and gpu_data
   // calls so that the prefetch thread does not accidentally make simultaneous
@@ -76,8 +79,8 @@ void BasePrefetchingDataLayer<Dtype>::LayerSetUp(
   DLOG(INFO) << "Prefetch initialized.";
 }
 
-template <typename Dtype>
-void BasePrefetchingDataLayer<Dtype>::InternalThreadEntry() {
+template<typename Dtype, typename MItype, typename MOtype>
+void BasePrefetchingDataLayer<Dtype, MItype, MOtype>::InternalThreadEntry() {
 #ifndef CPU_ONLY
 #ifdef USE_CUDA
   cudaStream_t stream;
@@ -98,6 +101,8 @@ void BasePrefetchingDataLayer<Dtype>::InternalThreadEntry() {
 #ifndef CPU_ONLY
 #ifdef USE_CUDA
       if (Caffe::mode() == Caffe::GPU) {
+        // FIXME: Async load
+        /*
         if (this->get_device()->backend() == BACKEND_CUDA) {
           batch->data_.data().get()->async_gpu_push(stream);
           if (this->output_labels_) {
@@ -105,6 +110,7 @@ void BasePrefetchingDataLayer<Dtype>::InternalThreadEntry() {
           }
           CUDA_CHECK(cudaStreamSynchronize(stream));
         }
+        */
       }
 #endif  // USE_CUDA
 #endif  // !CPU_ONLY
@@ -124,9 +130,10 @@ void BasePrefetchingDataLayer<Dtype>::InternalThreadEntry() {
 #endif  // !CPU_ONLY
 }
 
-template <typename Dtype>
-void BasePrefetchingDataLayer<Dtype>::Forward_cpu(
-    const vector<Blob<Dtype>*>& bottom, const vector<Blob<Dtype>*>& top) {
+template<typename Dtype, typename MItype, typename MOtype>
+void BasePrefetchingDataLayer<Dtype, MItype, MOtype>::Forward_cpu(
+    const vector<Blob<MItype>*>& bottom,
+    const vector<Blob<MOtype>*>& top) {
   if (prefetch_current_) {
     prefetch_free_.push(prefetch_current_);
   }
@@ -145,7 +152,26 @@ void BasePrefetchingDataLayer<Dtype>::Forward_cpu(
 STUB_GPU_FORWARD(BasePrefetchingDataLayer, Forward);
 #endif
 
-INSTANTIATE_CLASS(BaseDataLayer);
-INSTANTIATE_CLASS(BasePrefetchingDataLayer);
+INSTANTIATE_CLASS_3T_GUARDED(BaseDataLayer, (half_fp), (half_fp), (half_fp));
+INSTANTIATE_CLASS_3T_GUARDED(BaseDataLayer, (float), (float), (float));
+INSTANTIATE_CLASS_3T_GUARDED(BaseDataLayer, (double), (double), (double));
+INSTANTIATE_CLASS_3T_GUARDED(BaseDataLayer, (uint8_t), (uint8_t), (uint8_t));
+INSTANTIATE_CLASS_3T_GUARDED(BaseDataLayer, (uint16_t), (uint16_t), (uint16_t));
+INSTANTIATE_CLASS_3T_GUARDED(BaseDataLayer, (uint32_t), (uint32_t), (uint32_t));
+INSTANTIATE_CLASS_3T_GUARDED(BaseDataLayer, (uint64_t), (uint64_t), (uint64_t));
 
+INSTANTIATE_CLASS_3T_GUARDED(BasePrefetchingDataLayer,
+                             (half_fp), (half_fp), (half_fp));
+INSTANTIATE_CLASS_3T_GUARDED(BasePrefetchingDataLayer,
+                             (float), (float), (float));
+INSTANTIATE_CLASS_3T_GUARDED(BasePrefetchingDataLayer,
+                             (double), (double), (double));
+INSTANTIATE_CLASS_3T_GUARDED(BasePrefetchingDataLayer,
+                             (uint8_t), (uint8_t), (uint8_t));
+INSTANTIATE_CLASS_3T_GUARDED(BasePrefetchingDataLayer,
+                             (uint16_t), (uint16_t), (uint16_t));
+INSTANTIATE_CLASS_3T_GUARDED(BasePrefetchingDataLayer,
+                             (uint32_t), (uint32_t), (uint32_t));
+INSTANTIATE_CLASS_3T_GUARDED(BasePrefetchingDataLayer,
+                             (uint64_t), (uint64_t), (uint64_t));
 }  // namespace caffe

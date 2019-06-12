@@ -5,10 +5,11 @@
 
 namespace caffe {
 
-template <typename Dtype>
-void CuDNNLCNLayer<Dtype>::LayerSetUp(const vector<Blob<Dtype>*>& bottom,
-    const vector<Blob<Dtype>*>& top) {
-  LRNLayer<Dtype>::LayerSetUp(bottom, top);
+template<typename Dtype, typename MItype, typename MOtype>
+void CuDNNLCNLayer<Dtype, MItype, MOtype>::LayerSetUp(
+    const vector<Blob<MItype>*>& bottom,
+    const vector<Blob<MOtype>*>& top) {
+  LRNLayer<Dtype, MItype, MOtype>::LayerSetUp(bottom, top);
 
   CUDNN_CHECK(cudnnCreate(&handle_));
   CUDNN_CHECK(cudnnCreateLRNDescriptor(&norm_desc_));
@@ -25,11 +26,12 @@ void CuDNNLCNLayer<Dtype>::LayerSetUp(const vector<Blob<Dtype>*>& bottom,
   k_ = this->layer_param().lrn_param().k();
 }
 
-template <typename Dtype>
-void CuDNNLCNLayer<Dtype>::Reshape(const vector<Blob<Dtype>*>& bottom,
-    const vector<Blob<Dtype>*>& top) {
-  LRNLayer<Dtype>::Reshape(bottom, top);
-  std::vector<int_tp> shape;
+template<typename Dtype, typename MItype, typename MOtype>
+void CuDNNLCNLayer<Dtype, MItype, MOtype>::Reshape(
+    const vector<Blob<MItype>*>& bottom,
+    const vector<Blob<MOtype>*>& top) {
+  LRNLayer<Dtype, MItype, MOtype>::Reshape(bottom, top);
+  vector<int_tp> shape;
 
   shape.push_back(bottom[0]->num());
   shape.push_back(this->channels_);
@@ -59,8 +61,8 @@ void CuDNNLCNLayer<Dtype>::Reshape(const vector<Blob<Dtype>*>& bottom,
   }
 }
 
-template <typename Dtype>
-CuDNNLCNLayer<Dtype>::~CuDNNLCNLayer() {
+template<typename Dtype, typename MItype, typename MOtype>
+CuDNNLCNLayer<Dtype, MItype, MOtype>::~CuDNNLCNLayer() {
   // Check that handles have been setup before destroying.
   if (!handles_setup_) { return; }
 
@@ -75,7 +77,8 @@ CuDNNLCNLayer<Dtype>::~CuDNNLCNLayer() {
   cudaFree(tempData2);
 }
 
-INSTANTIATE_CLASS(CuDNNLCNLayer);
+INSTANTIATE_CLASS_3T_GUARDED(CuDNNLCNLayer, (float), (float), (float));
+INSTANTIATE_CLASS_3T_GUARDED(CuDNNLCNLayer, (double), (double), (double));
 
 }   // namespace caffe
 #endif

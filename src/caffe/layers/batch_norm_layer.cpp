@@ -6,9 +6,10 @@
 
 namespace caffe {
 
-template<typename Dtype>
-void BatchNormLayer<Dtype>::LayerSetUp(const vector<Blob<Dtype>*>& bottom,
-                                       const vector<Blob<Dtype>*>& top) {
+template<typename Dtype, typename MItype, typename MOtype>
+void BatchNormLayer<Dtype, MItype, MOtype>::LayerSetUp(
+    const vector<Blob<MItype>*>& bottom,
+    const vector<Blob<MOtype>*>& top) {
   BatchNormParameter param = this->layer_param_.batch_norm_param();
   moving_average_fraction_ = param.moving_average_fraction();
   use_global_stats_ = this->phase_ == TEST;
@@ -46,11 +47,14 @@ void BatchNormLayer<Dtype>::LayerSetUp(const vector<Blob<Dtype>*>& bottom,
           << "parameters.";
     }
   }
+
+  this->InitializeQuantizers(bottom, top);
 }
 
-template<typename Dtype>
-void BatchNormLayer<Dtype>::Reshape(const vector<Blob<Dtype>*>& bottom,
-                                    const vector<Blob<Dtype>*>& top) {
+template<typename Dtype, typename MItype, typename MOtype>
+void BatchNormLayer<Dtype, MItype, MOtype>::Reshape(
+    const vector<Blob<MItype>*>& bottom,
+    const vector<Blob<MOtype>*>& top) {
   if (bottom[0]->num_axes() >= 1)
     CHECK_EQ(bottom[0]->shape(1), channels_);
   top[0]->ReshapeLike(*bottom[0]);
@@ -82,9 +86,10 @@ void BatchNormLayer<Dtype>::Reshape(const vector<Blob<Dtype>*>& bottom,
   }
 }
 
-template<typename Dtype>
-void BatchNormLayer<Dtype>::Forward_cpu(const vector<Blob<Dtype>*>& bottom,
-                                        const vector<Blob<Dtype>*>& top) {
+template<typename Dtype, typename MItype, typename MOtype>
+void BatchNormLayer<Dtype, MItype, MOtype>::Forward_cpu(
+    const vector<Blob<MItype>*>& bottom,
+    const vector<Blob<MOtype>*>& top) {
   const Dtype* bottom_data = bottom[0]->cpu_data();
   Dtype* top_data = top[0]->mutable_cpu_data();
   int_tp num = bottom[0]->shape(0);
@@ -98,63 +103,63 @@ void BatchNormLayer<Dtype>::Forward_cpu(const vector<Blob<Dtype>*>& bottom,
     // use the stored mean/variance estimates.
     const Dtype scale_factor = this->blobs_[2]->cpu_data()[0] == 0 ?
         0 : 1 / this->blobs_[2]->cpu_data()[0];
-    caffe_cpu_scale(variance_.count(), scale_factor,
+    caffe_scale(variance_.count(), scale_factor,
                     this->blobs_[0]->cpu_data(), mean_.mutable_cpu_data());
-    caffe_cpu_scale(variance_.count(), scale_factor,
+    caffe_scale(variance_.count(), scale_factor,
                     this->blobs_[1]->cpu_data(), variance_.mutable_cpu_data());
   } else {
     // compute mean
-    caffe_cpu_gemv<Dtype>(CblasNoTrans, channels_ * num, spatial_dim,
+    caffe_gemv<Dtype>(CblasNoTrans, channels_ * num, spatial_dim,
                           1. / (num * spatial_dim), bottom_data,
                           spatial_sum_multiplier_.cpu_data(), 0.,
                           num_by_chans_.mutable_cpu_data());
-    caffe_cpu_gemv<Dtype>(CblasTrans, num, channels_, 1.,
+    caffe_gemv<Dtype>(CblasTrans, num, channels_, 1.,
         num_by_chans_.cpu_data(), batch_sum_multiplier_.cpu_data(), 0.,
         mean_.mutable_cpu_data());
   }
 
   // subtract mean
-  caffe_cpu_gemm<Dtype>(CblasNoTrans, CblasNoTrans, num, channels_, 1, 1,
+  caffe_gemm<Dtype>(CblasNoTrans, CblasNoTrans, num, channels_, 1, 1,
       batch_sum_multiplier_.cpu_data(), mean_.cpu_data(), 0.,
       num_by_chans_.mutable_cpu_data());
-  caffe_cpu_gemm<Dtype>(CblasNoTrans, CblasNoTrans, channels_ * num,
+  caffe_gemm<Dtype>(CblasNoTrans, CblasNoTrans, channels_ * num,
       spatial_dim, 1, -1, num_by_chans_.cpu_data(),
       spatial_sum_multiplier_.cpu_data(), 1., top_data);
 
   if (!use_global_stats_) {
     // compute variance using var(X) = E((X-EX)^2)
-    caffe_powx(top[0]->count(), top_data, Dtype(2),
-        temp_.mutable_cpu_data());  // (X-EX)^2
-    caffe_cpu_gemv<Dtype>(CblasNoTrans, channels_ * num, spatial_dim,
+    caffe_sqr<Dtype>(top[0]->count(), top_data,
+                     temp_.mutable_cpu_data());  // (X-EX)^2
+    caffe_gemv<Dtype>(CblasNoTrans, channels_ * num, spatial_dim,
                           1. / (num * spatial_dim), temp_.cpu_data(),
                           spatial_sum_multiplier_.cpu_data(), 0.,
                           num_by_chans_.mutable_cpu_data());
-    caffe_cpu_gemv<Dtype>(CblasTrans, num, channels_, 1.,
+    caffe_gemv<Dtype>(CblasTrans, num, channels_, 1.,
         num_by_chans_.cpu_data(), batch_sum_multiplier_.cpu_data(), 0.,
         variance_.mutable_cpu_data());  // E((X_EX)^2)
 
     // compute and save moving average
     this->blobs_[2]->mutable_cpu_data()[0] *= moving_average_fraction_;
     this->blobs_[2]->mutable_cpu_data()[0] += 1;
-    caffe_cpu_axpby(mean_.count(), Dtype(1), mean_.cpu_data(),
+    caffe_axpby(mean_.count(), Dtype(1), mean_.cpu_data(),
         moving_average_fraction_, this->blobs_[0]->mutable_cpu_data());
     int_tp m = bottom[0]->count()/channels_;
     Dtype bias_correction_factor = m > 1 ? Dtype(m)/(m-1) : 1;
-    caffe_cpu_axpby(variance_.count(), bias_correction_factor,
+    caffe_axpby(variance_.count(), bias_correction_factor,
         variance_.cpu_data(), moving_average_fraction_,
         this->blobs_[1]->mutable_cpu_data());
   }
 
   // normalize variance
   caffe_add_scalar(variance_.count(), eps_, variance_.mutable_cpu_data());
-  caffe_powx(variance_.count(), variance_.cpu_data(), Dtype(0.5),
+  caffe_sqrt(variance_.count(), variance_.cpu_data(),
              variance_.mutable_cpu_data());
 
   // replicate variance to input size
-  caffe_cpu_gemm<Dtype>(CblasNoTrans, CblasNoTrans, num, channels_, 1, 1,
+  caffe_gemm<Dtype>(CblasNoTrans, CblasNoTrans, num, channels_, 1, 1,
                         batch_sum_multiplier_.cpu_data(), variance_.cpu_data(),
                         0., num_by_chans_.mutable_cpu_data());
-  caffe_cpu_gemm<Dtype>(CblasNoTrans, CblasNoTrans, channels_ * num,
+  caffe_gemm<Dtype>(CblasNoTrans, CblasNoTrans, channels_ * num,
                         spatial_dim, 1, 1., num_by_chans_.cpu_data(),
                         spatial_sum_multiplier_.cpu_data(), 0.,
                         temp_.mutable_cpu_data());
@@ -164,10 +169,11 @@ void BatchNormLayer<Dtype>::Forward_cpu(const vector<Blob<Dtype>*>& bottom,
   caffe_copy(x_norm_.count(), top_data, x_norm_.mutable_cpu_data());
 }
 
-template<typename Dtype>
-void BatchNormLayer<Dtype>::Backward_cpu(const vector<Blob<Dtype>*>& top,
+template<typename Dtype, typename MItype, typename MOtype>
+void BatchNormLayer<Dtype, MItype, MOtype>::Backward_cpu(
+    const vector<Blob<MOtype>*>& top,
     const vector<bool>& propagate_down,
-    const vector<Blob<Dtype>*>& bottom) {
+    const vector<Blob<MItype>*>& bottom) {
   const Dtype* top_diff;
   if (bottom[0] != top[0]) {
     top_diff = top[0]->cpu_diff();
@@ -197,19 +203,19 @@ void BatchNormLayer<Dtype>::Backward_cpu(const vector<Blob<Dtype>*>& top,
 
   // sum(dE/dY \cdot Y)
   caffe_mul(temp_.count(), top_data, top_diff, bottom_diff);
-  caffe_cpu_gemv<Dtype>(CblasNoTrans, channels_ * num, spatial_dim, 1.,
+  caffe_gemv<Dtype>(CblasNoTrans, channels_ * num, spatial_dim, 1.,
                         bottom_diff, spatial_sum_multiplier_.cpu_data(), 0.,
                         num_by_chans_.mutable_cpu_data());
-  caffe_cpu_gemv<Dtype>(CblasTrans, num, channels_, 1.,
+  caffe_gemv<Dtype>(CblasTrans, num, channels_, 1.,
                         num_by_chans_.cpu_data(),
                         batch_sum_multiplier_.cpu_data(), 0.,
                         mean_.mutable_cpu_data());
 
   // reshape (broadcast) the above
-  caffe_cpu_gemm<Dtype>(CblasNoTrans, CblasNoTrans, num, channels_, 1, 1,
+  caffe_gemm<Dtype>(CblasNoTrans, CblasNoTrans, num, channels_, 1, 1,
                         batch_sum_multiplier_.cpu_data(), mean_.cpu_data(), 0.,
                         num_by_chans_.mutable_cpu_data());
-  caffe_cpu_gemm<Dtype>(CblasNoTrans, CblasNoTrans, channels_ * num,
+  caffe_gemm<Dtype>(CblasNoTrans, CblasNoTrans, channels_ * num,
                         spatial_dim, 1, 1., num_by_chans_.cpu_data(),
                         spatial_sum_multiplier_.cpu_data(), 0., bottom_diff);
 
@@ -217,24 +223,24 @@ void BatchNormLayer<Dtype>::Backward_cpu(const vector<Blob<Dtype>*>& top,
   caffe_mul(temp_.count(), top_data, bottom_diff, bottom_diff);
 
   // sum(dE/dY)-sum(dE/dY \cdot Y) \cdot Y
-  caffe_cpu_gemv<Dtype>(CblasNoTrans, channels_ * num, spatial_dim, 1.,
+  caffe_gemv<Dtype>(CblasNoTrans, channels_ * num, spatial_dim, 1.,
                         top_diff, spatial_sum_multiplier_.cpu_data(), 0.,
                         num_by_chans_.mutable_cpu_data());
-  caffe_cpu_gemv<Dtype>(CblasTrans, num, channels_, 1.,
+  caffe_gemv<Dtype>(CblasTrans, num, channels_, 1.,
                         num_by_chans_.cpu_data(),
                         batch_sum_multiplier_.cpu_data(), 0.,
                         mean_.mutable_cpu_data());
   // reshape (broadcast) the above to make
   // sum(dE/dY)-sum(dE/dY \cdot Y) \cdot Y
-  caffe_cpu_gemm<Dtype>(CblasNoTrans, CblasNoTrans, num, channels_, 1, 1,
+  caffe_gemm<Dtype>(CblasNoTrans, CblasNoTrans, num, channels_, 1, 1,
                         batch_sum_multiplier_.cpu_data(), mean_.cpu_data(), 0.,
                         num_by_chans_.mutable_cpu_data());
-  caffe_cpu_gemm<Dtype>(CblasNoTrans, CblasNoTrans, num * channels_,
+  caffe_gemm<Dtype>(CblasNoTrans, CblasNoTrans, num * channels_,
                         spatial_dim, 1, 1., num_by_chans_.cpu_data(),
                         spatial_sum_multiplier_.cpu_data(), 1., bottom_diff);
 
   // dE/dY - mean(dE/dY)-mean(dE/dY \cdot Y) \cdot Y
-  caffe_cpu_axpby(temp_.count(), Dtype(1), top_diff,
+  caffe_axpby(temp_.count(), Dtype(1), top_diff,
                   Dtype(-1. / (num * spatial_dim)), bottom_diff);
 
   // note: temp_ still contains sqrt(var(X)+eps), computed during the forward
@@ -246,6 +252,13 @@ void BatchNormLayer<Dtype>::Backward_cpu(const vector<Blob<Dtype>*>& top,
 STUB_GPU(BatchNormLayer);
 #endif
 
-INSTANTIATE_CLASS(BatchNormLayer);
+INSTANTIATE_CLASS_3T_GUARDED(BatchNormLayer, (half_fp), (half_fp), (half_fp));
+INSTANTIATE_CLASS_3T_GUARDED(BatchNormLayer, (float), (float), (float));
+INSTANTIATE_CLASS_3T_GUARDED(BatchNormLayer, (double), (double), (double));
+
 REGISTER_LAYER_CLASS(BatchNorm);
+REGISTER_LAYER_CLASS_INST(BatchNorm, (half_fp), (half_fp), (half_fp));
+REGISTER_LAYER_CLASS_INST(BatchNorm, (float), (float), (float));
+REGISTER_LAYER_CLASS_INST(BatchNorm, (double), (double), (double));
+
 }  // namespace caffe

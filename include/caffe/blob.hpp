@@ -6,77 +6,57 @@
 #include <vector>
 
 #include "caffe/common.hpp"
-#include "caffe/definitions.hpp"
 #include "caffe/proto/caffe.pb.h"
 #include "caffe/syncedmem.hpp"
-
-#ifdef USE_CUDA
-#include "caffe/util/math_functions.hpp"
-#endif
-
-#ifdef USE_GREENTEA
-#include "caffe/greentea/greentea_math_functions.hpp"
-#endif
+#include "caffe/backend/vptr.hpp"
 
 const int_tp kMaxBlobAxes = 32;
 
 namespace caffe {
 
-class device;
+class Device;
 
-/**
- * @brief A wrapper around SyncedMemory holders serving as the basic
- *        computational unit through which Layer%s, Net%s, and Solver%s
- *        interact.
- *
- * TODO(dox): more thorough description.
- */
-template<typename Dtype>
-class Blob {
+class QuantizerBase;
+
+class BlobBase {
  public:
-  Blob()
+  BlobBase()
       : data_(),
         diff_(),
         count_(0),
         capacity_(0),
         device_(Caffe::GetDefaultDevice()) {
   }
-  explicit Blob(device *device_context)
+  BlobBase(Device *dev)
       : data_(),
         diff_(),
         count_(0),
         capacity_(0),
-        device_(device_context) {
+        device_(dev) {
   }
-  explicit Blob(const int_tp num, const int_tp channels, const int_tp height,
-                const int_tp width, device *device_context =
-                    Caffe::GetDefaultDevice());
-  explicit Blob(const vector<int_tp>& shape, device *device_context =
-                    Caffe::GetDefaultDevice());
+  virtual ~BlobBase() {
 
-  /**
-   * @brief Change the dimensions of the blob, allocating new memory if
-   *        necessary.
-   *
-   * This function can be called both to create an initial allocation
-   * of memory, and to adjust the dimensions of a top blob during Layer::Reshape
-   * or Layer::Forward. When changing the size of blob, memory will only be
-   * reallocated if sufficient memory does not already exist, and excess memory
-   * will never be freed.
-   *
-   * Note that reshaping an input blob and immediately calling Net::Backward is
-   * an error; either Net::Forward or Net::Reshape need to be called to
-   * propagate the new input shape to higher layers.
-   *
-   * Reshape returns true if new memory was allocated.
-   */
-  bool Reshape(const vector<int_tp>& shape);
-  bool Reshape(const BlobShape& shape);
-  bool Reshape(const int_tp num, const int_tp channels, const int_tp height,
-               const int_tp width);
-  bool ReshapeLike(const Blob& other);
+  }
+
+
+  virtual void FromProto(const BlobProto& proto, bool reshape = true) = 0;
+  virtual void ToProto(BlobProto* proto, bool write_diff = false) const = 0;
+
+  virtual void Update() = 0;
+  virtual void Clear() = 0;
+
+  virtual bool Reshape(const vector<int_tp>& shape) = 0;
+  virtual bool Reshape(const vector<int_tp>& shape,
+               const vector<int_tp>& shape_stride) = 0;
+  virtual bool Reshape(const BlobShape& shape) = 0;
+  virtual bool Reshape(const BlobShape& shape,
+                       const BlobShape& shape_stride) = 0;
+  virtual bool Reshape(const int_tp num, const int_tp channels,
+                       const int_tp height, const int_tp width) = 0;
+  virtual bool ReshapeLike(const BlobBase* other) = 0;
+
   inline string shape_string() const {
-    ostringstream stream;
+    std::ostringstream stream;
     for (int_tp i = 0; i < shape_.size(); ++i) {
       stream << shape_[i] << " ";
     }
@@ -85,6 +65,9 @@ class Blob {
   }
   inline const vector<int_tp>& shape() const {
     return shape_;
+  }
+  inline const vector<int_tp>& shape_stride() const {
+    return shape_stride_;
   }
   /**
    * @brief Returns the dimension of the index-th axis (or the negative index-th
@@ -97,12 +80,29 @@ class Blob {
   inline int_tp shape(int_tp index) const {
     return shape_[CanonicalAxisIndex(index)];
   }
+  inline int_tp shape_stride(int_tp index) const {
+    return shape_stride_[CanonicalAxisIndex(index)];
+  }
   inline int_tp num_axes() const {
     return shape_.size();
   }
   inline int_tp count() const {
     return count_;
   }
+  virtual uint_tp byte_count() const = 0;
+
+  inline shared_ptr<QuantizerBase> quant() {
+    CHECK(quant_.get());
+    return quant_;
+  }
+
+  inline void set_quant(shared_ptr<QuantizerBase> quant) {
+    CHECK(quant.get());
+    quant_ = quant;
+  }
+
+  virtual void scale_data(const void* scale_factor) = 0;
+  virtual void scale_diff(const void* scale_factor) = 0;
 
   /**
    * @brief Compute the volume of a slice; i.e., the product of dimensions
@@ -124,6 +124,20 @@ class Blob {
     }
     return count;
   }
+
+  inline int_tp count_stride(int_tp start_axis, int_tp end_axis) const {
+    CHECK_LE(start_axis, end_axis);
+    CHECK_GE(start_axis, 0);
+    CHECK_GE(end_axis, 0);
+    CHECK_LE(start_axis, num_axes());
+    CHECK_LE(end_axis, num_axes());
+    int_tp count = 1;
+    for (int_tp i = start_axis; i < end_axis; ++i) {
+      count *= shape_stride(i);
+    }
+    return count;
+  }
+
   /**
    * @brief Compute the volume of a slice spanning from a particular first
    *        axis to the final axis.
@@ -180,8 +194,9 @@ class Blob {
     }
     return shape(index);
   }
-  inline int_tp offset(const int_tp n, const int_tp c = 0, const int_tp h = 0,
-      const int_tp w = 0) const {
+
+  inline int_tp offset(const int_tp n, const int_tp c = 0,
+                       const int_tp h = 0, const int_tp w = 0) const {
     CHECK_GE(n, 0);
     CHECK_LE(n, num());
     CHECK_GE(channels(), 0);
@@ -206,6 +221,117 @@ class Blob {
     }
     return offset;
   }
+
+  /**
+   * @brief Return the device context to which this blob and shared memory belongs
+   */
+  inline Device *get_device() const {
+    return device_;
+  }
+
+  bool ShapeEquals(const BlobProto& other);
+
+  virtual DataType data_type() const = 0;
+
+  virtual void asum_data(void* out) const = 0;
+  virtual void asum_diff(void* out) const = 0;
+  virtual void sumsq_data(void* out) const = 0;
+  virtual void sumsq_diff(void* out) const = 0;
+
+  virtual void cpu_data(void* out) const = 0;
+  virtual void cpu_diff(void* out) const = 0;
+  virtual void gpu_data(vptr<void> out) const = 0;
+  virtual void gpu_diff(vptr<void> out) const = 0;
+
+  virtual void set_cpu_data(const void* const in) = 0;
+  virtual void set_cpu_diff(const void* const in) = 0;
+  virtual void set_gpu_data(vptr<const void> in) = 0;
+  virtual void set_gpu_diff(vptr<const void> in) = 0;
+
+  void ShareDataBase(const BlobBase* other);
+  void ShareDiffBase(const BlobBase* other);
+
+  inline const shared_ptr<SyncedMemory>& data() const {
+    CHECK(data_);
+    return data_;
+  }
+
+  inline const shared_ptr<SyncedMemory>& diff() const {
+    CHECK(diff_);
+    return diff_;
+  }
+
+ protected:
+  shared_ptr<SyncedMemory> data_;
+  shared_ptr<SyncedMemory> diff_;
+  shared_ptr<SyncedMemory> shape_data_;
+  shared_ptr<SyncedMemory> shape_stride_data_;
+  vector<int_tp> shape_;
+  vector<int_tp> shape_stride_;
+  vector<int_tp> offset_shape_;
+  int_tp count_;
+  int_tp capacity_;
+  Device *device_;
+  shared_ptr<QuantizerBase> quant_;
+
+  DISABLE_COPY_AND_ASSIGN(BlobBase);
+};
+
+/**
+ * @brief a wrapper around SyncedMemory holders serving as the basic
+ *        computational unit through which Layer%s, Net%s, and Solver%s
+ *        interact.
+ *
+ * TODO(dox): more thorough description.
+ */
+template<typename Dtype>
+class Blob : public BlobBase {
+ public:
+  Blob() : BlobBase() { }
+  virtual ~Blob() { }
+
+  explicit Blob(Device *dev);
+
+  explicit Blob(const int_tp num, const int_tp channels, const int_tp height,
+                const int_tp width, Device *device_context =
+                    Caffe::GetDefaultDevice());
+  explicit Blob(const vector<int_tp>& shape,
+                Device *device_context =
+                    Caffe::GetDefaultDevice());
+  explicit Blob(const vector<int_tp>& shape,
+                const vector<int_tp>& shape_stride,
+                Device *device_context =
+                    Caffe::GetDefaultDevice());
+
+  void Init();
+
+  /**
+   * @brief Change the dimensions of the blob, allocating new memory if
+   *        necessary.
+   *
+   * This function can be called both to create an initial allocation
+   * of memory, and to adjust the dimensions of a top blob during Layer::Reshape
+   * or Layer::Forward. When changing the size of blob, memory will only be
+   * reallocated if sufficient memory does not already exist, and excess memory
+   * will never be freed.
+   *
+   * Note that reshaping an input blob and immediately calling Net::Backward is
+   * an error; either Net::Forward or Net::Reshape need to be called to
+   * propagate the new input shape to higher layers.
+   *
+   * Reshape returns true if new memory was allocated.
+   */
+  virtual bool Reshape(const vector<int_tp>& shape);
+  virtual bool Reshape(const vector<int_tp>& shape,
+               const vector<int_tp>& shape_stride);
+  virtual bool Reshape(const BlobShape& shape);
+  virtual bool Reshape(const BlobShape& shape,
+                       const BlobShape& shape_stride);
+  virtual bool Reshape(const int_tp num, const int_tp channels,
+                       const int_tp height, const int_tp width);
+  virtual bool ReshapeLike(const BlobBase* other);
+  bool ReshapeLike(const Blob& other);
+
   /**
    * @brief Copy from a source Blob.
    *
@@ -236,30 +362,22 @@ class Blob {
     return cpu_diff()[offset(index)];
   }
 
-  inline const shared_ptr<SyncedMemory>& data() const {
-    CHECK(data_);
-    return data_;
-  }
-
-  inline const shared_ptr<SyncedMemory>& diff() const {
-    CHECK(diff_);
-    return diff_;
-  }
-
   const Dtype* cpu_data() const;
   void set_cpu_data(Dtype* data);
-  const int_tp* gpu_shape() const;
-  const Dtype* gpu_data() const;
-  void set_gpu_data(Dtype* data);
+  vptr<const int_tp> gpu_shape() const;
+  vptr<const Dtype> gpu_data() const;
+  void set_gpu_data(vptr<Dtype> data);
   const Dtype* cpu_diff() const;
-  const Dtype* gpu_diff() const;
+  vptr<const Dtype> gpu_diff() const;
   Dtype* mutable_cpu_data();
-  Dtype* mutable_gpu_data();
+  vptr<Dtype> mutable_gpu_data();
   Dtype* mutable_cpu_diff();
-  Dtype* mutable_gpu_diff();
-  void Update();
-  void FromProto(const BlobProto& proto, bool reshape = true);
-  void ToProto(BlobProto* proto, bool write_diff = false) const;
+  vptr<Dtype> mutable_gpu_diff();
+  virtual void Update();
+  virtual void Clear();
+
+  virtual void FromProto(const BlobProto& proto, bool reshape = true);
+  virtual void ToProto(BlobProto* proto, bool write_diff = false) const;
 
   /// @brief Compute the sum of absolute values (L1 norm) of the data.
   Dtype asum_data() const;
@@ -270,10 +388,29 @@ class Blob {
   /// @brief Compute the sum of squares (L2 norm squared) of the diff.
   Dtype sumsq_diff() const;
 
+  virtual void asum_data(void* out) const;
+  virtual void asum_diff(void* out) const;
+  virtual void sumsq_data(void* out) const;
+  virtual void sumsq_diff(void* out) const;
+
+  virtual void cpu_data(void* out) const;
+  virtual void cpu_diff(void* out) const;
+  virtual void gpu_data(vptr<void> out) const;
+  virtual void gpu_diff(vptr<void> out) const;
+
+  virtual void set_cpu_data(const void* const in);
+  virtual void set_cpu_diff(const void* const in);
+  virtual void set_gpu_data(vptr<const void> in);
+  virtual void set_gpu_diff(vptr<const void> in);
+
   /// @brief Scale the blob data by a constant factor.
+  virtual void scale_data(const void* scale_factor);
   void scale_data(Dtype scale_factor);
   /// @brief Scale the blob diff by a constant factor.
+  virtual void scale_diff(const void* scale_factor);
   void scale_diff(Dtype scale_factor);
+
+  virtual uint_tp byte_count() const;
 
   /**
    * @brief Set the data_ shared_ptr to point to the SyncedMemory holding the
@@ -286,7 +423,7 @@ class Blob {
   void ShareData(const Blob& other);
   /**
    * @brief Set the diff_ shared_ptr to point to the SyncedMemory holding the
-   *        diff_ of Blob other -- useful in Layer&s which simply perform a copy
+   *        diff_ of Blob other -- useful in Layers which simply perform a copy
    *        in their Forward pass.
    *
    * This deallocates the SyncedMemory holding this Blob's diff_, as
@@ -294,25 +431,58 @@ class Blob {
    */
   void ShareDiff(const Blob& other);
 
-  bool ShapeEquals(const BlobProto& other);
-
-  /**
-   * @brief Return the device context to which this blob and shared memory belongs
-   */
-  device *get_device();
-
- protected:
-  shared_ptr<SyncedMemory> data_;
-  shared_ptr<SyncedMemory> diff_;
-  shared_ptr<SyncedMemory> shape_data_;
-  vector<int_tp> shape_;
-  uint_tp count_;
-  uint_tp capacity_;
-  device *device_;
+  virtual DataType data_type() const;
 
   DISABLE_COPY_AND_ASSIGN(Blob);
-};
-// class Blob
+};  // class Blob
+
+
+template<> void Blob<int8_t>::Init();
+template<> void Blob<int16_t>::Init();
+template<> void Blob<int32_t>::Init();
+template<> void Blob<int64_t>::Init();
+
+template<> void Blob<int8_t>::Update();
+template<> void Blob<int16_t>::Update();
+template<> void Blob<int32_t>::Update();
+template<> void Blob<int64_t>::Update();
+
+template<> int8_t Blob<int8_t>::asum_data() const;
+template<> int16_t Blob<int16_t>::asum_data() const;
+template<> int32_t Blob<int32_t>::asum_data() const;
+template<> int64_t Blob<int64_t>::asum_data() const;
+
+template<> int8_t Blob<int8_t>::asum_diff() const;
+template<> int16_t Blob<int16_t>::asum_diff() const;
+template<> int32_t Blob<int32_t>::asum_diff() const;
+template<> int64_t Blob<int64_t>::asum_diff() const;
+
+template<> int8_t Blob<int8_t>::sumsq_data() const;
+template<> int16_t Blob<int16_t>::sumsq_data() const;
+template<> int32_t Blob<int32_t>::sumsq_data() const;
+template<> int64_t Blob<int64_t>::sumsq_data() const;
+
+template<> int8_t Blob<int8_t>::sumsq_diff() const;
+template<> int16_t Blob<int16_t>::sumsq_diff() const;
+template<> int32_t Blob<int32_t>::sumsq_diff() const;
+template<> int64_t Blob<int64_t>::sumsq_diff() const;
+
+template<> void Blob<int8_t>::scale_data(int8_t scale_factor);
+template<> void Blob<int16_t>::scale_data(int16_t scale_factor);
+template<> void Blob<int32_t>::scale_data(int32_t scale_factor);
+template<> void Blob<int64_t>::scale_data(int64_t scale_factor);
+
+template<> void Blob<int8_t>::scale_diff(int8_t scale_factor);
+template<> void Blob<int16_t>::scale_diff(int16_t scale_factor);
+template<> void Blob<int32_t>::scale_diff(int32_t scale_factor);
+template<> void Blob<int64_t>::scale_diff(int64_t scale_factor);
+
+template<> void Blob<float>::ToProto(BlobProto* proto, bool write_diff) const;
+template<> void Blob<double>::ToProto(BlobProto* proto, bool write_diff) const;
+
+EXTERN_CLASS_1T(Blob, (half_fp)(float)(double));
+EXTERN_CLASS_1T(Blob, (int8_t)(int16_t)(int32_t)(int64_t));
+EXTERN_CLASS_1T(Blob, (uint8_t)(uint16_t)(uint32_t)(uint64_t));
 
 }  // namespace caffe
 

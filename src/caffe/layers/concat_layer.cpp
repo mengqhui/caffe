@@ -5,17 +5,20 @@
 
 namespace caffe {
 
-template <typename Dtype>
-void ConcatLayer<Dtype>::LayerSetUp(const vector<Blob<Dtype>*>& bottom,
-      const vector<Blob<Dtype>*>& top) {
+template<typename Dtype, typename MItype, typename MOtype>
+void ConcatLayer<Dtype, MItype, MOtype>::LayerSetUp(
+    const vector<Blob<MItype>*>& bottom,
+    const vector<Blob<MOtype>*>& top) {
   const ConcatParameter& concat_param = this->layer_param_.concat_param();
   CHECK(!(concat_param.has_axis() && concat_param.has_concat_dim()))
       << "Either axis or concat_dim should be specified; not both.";
+  this->InitializeQuantizers(bottom, top);
 }
 
-template <typename Dtype>
-void ConcatLayer<Dtype>::Reshape(const vector<Blob<Dtype>*>& bottom,
-      const vector<Blob<Dtype>*>& top) {
+template<typename Dtype, typename MItype, typename MOtype>
+void ConcatLayer<Dtype, MItype, MOtype>::Reshape(
+    const vector<Blob<MItype>*>& bottom,
+    const vector<Blob<MOtype>*>& top) {
   const int_tp num_axes = bottom[0]->num_axes();
   const ConcatParameter& concat_param = this->layer_param_.concat_param();
   if (concat_param.has_concat_dim()) {
@@ -51,11 +54,16 @@ void ConcatLayer<Dtype>::Reshape(const vector<Blob<Dtype>*>& bottom,
     top[0]->ShareData(*bottom[0]);
     top[0]->ShareDiff(*bottom[0]);
   }
+
+  if (Caffe::mode() == Caffe::GPU && this->device_program_.get() == nullptr) {
+    this->GenerateProgram();
+  }
 }
 
-template <typename Dtype>
-void ConcatLayer<Dtype>::Forward_cpu(const vector<Blob<Dtype>*>& bottom,
-      const vector<Blob<Dtype>*>& top) {
+template<typename Dtype, typename MItype, typename MOtype>
+void ConcatLayer<Dtype, MItype, MOtype>::Forward_cpu(
+    const vector<Blob<MItype>*>& bottom,
+    const vector<Blob<MOtype>*>& top) {
   if (bottom.size() == 1) { return; }
   Dtype* top_data = top[0]->mutable_cpu_data();
   int_tp offset_concat_axis = 0;
@@ -64,7 +72,7 @@ void ConcatLayer<Dtype>::Forward_cpu(const vector<Blob<Dtype>*>& bottom,
     const Dtype* bottom_data = bottom[i]->cpu_data();
     const int_tp bottom_concat_axis = bottom[i]->shape(concat_axis_);
     for (int_tp n = 0; n < num_concats_; ++n) {
-      caffe_cpu_copy(bottom_concat_axis * concat_input_size_,
+      caffe_copy(bottom_concat_axis * concat_input_size_,
           bottom_data + n * bottom_concat_axis * concat_input_size_,
           top_data + (n * top_concat_axis + offset_concat_axis)
               * concat_input_size_);
@@ -73,9 +81,10 @@ void ConcatLayer<Dtype>::Forward_cpu(const vector<Blob<Dtype>*>& bottom,
   }
 }
 
-template <typename Dtype>
-void ConcatLayer<Dtype>::Backward_cpu(const vector<Blob<Dtype>*>& top,
-      const vector<bool>& propagate_down, const vector<Blob<Dtype>*>& bottom) {
+template<typename Dtype, typename MItype, typename MOtype>
+void ConcatLayer<Dtype, MItype, MOtype>::Backward_cpu(
+    const vector<Blob<MOtype>*>& top, const vector<bool>& propagate_down,
+    const vector<Blob<MItype>*>& bottom) {
   if (bottom.size() == 1) { return; }
   const Dtype* top_diff = top[0]->cpu_diff();
   int_tp offset_concat_axis = 0;
@@ -85,7 +94,7 @@ void ConcatLayer<Dtype>::Backward_cpu(const vector<Blob<Dtype>*>& top,
     if (propagate_down[i]) {
       Dtype* bottom_diff = bottom[i]->mutable_cpu_diff();
       for (int_tp n = 0; n < num_concats_; ++n) {
-        caffe_cpu_copy(bottom_concat_axis * concat_input_size_, top_diff +
+        caffe_copy(bottom_concat_axis * concat_input_size_, top_diff +
             (n * top_concat_axis + offset_concat_axis) * concat_input_size_,
             bottom_diff + n * bottom_concat_axis * concat_input_size_);
       }
@@ -98,7 +107,12 @@ void ConcatLayer<Dtype>::Backward_cpu(const vector<Blob<Dtype>*>& top,
 STUB_GPU(ConcatLayer);
 #endif
 
-INSTANTIATE_CLASS(ConcatLayer);
-REGISTER_LAYER_CLASS(Concat);
+INSTANTIATE_CLASS_3T_GUARDED(ConcatLayer, (half_fp), (half_fp), (half_fp));
+INSTANTIATE_CLASS_3T_GUARDED(ConcatLayer, (float), (float), (float));
+INSTANTIATE_CLASS_3T_GUARDED(ConcatLayer, (double), (double), (double));
 
+REGISTER_LAYER_CLASS(Concat);
+REGISTER_LAYER_CLASS_INST(Concat, (half_fp), (half_fp), (half_fp));
+REGISTER_LAYER_CLASS_INST(Concat, (float), (float), (float));
+REGISTER_LAYER_CLASS_INST(Concat, (double), (double), (double));
 }  // namespace caffe

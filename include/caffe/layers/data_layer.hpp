@@ -13,15 +13,14 @@
 
 namespace caffe {
 
-template <typename Dtype>
-class DataLayer : public BasePrefetchingDataLayer<Dtype> {
+template<typename Dtype, typename MItype, typename MOtype>
+class DataLayer
+    : public BasePrefetchingDataLayer<Dtype, MItype, MOtype> {
  public:
   explicit DataLayer(const LayerParameter& param);
   virtual ~DataLayer();
-  virtual void DataLayerSetUp(const vector<Blob<Dtype>*>& bottom,
-      const vector<Blob<Dtype>*>& top);
-  // DataLayer uses DataReader instead for sharing for parallelism
-  virtual inline bool ShareInParallel() const { return false; }
+  virtual void DataLayerSetUp(const vector<Blob<MItype>*>& bottom,
+      const vector<Blob<MOtype>*>& top);
   virtual inline const char* type() const { return "Data"; }
   virtual inline int_tp ExactNumBottomBlobs() const { return 0; }
   virtual inline int_tp MinTopBlobs() const { return 1; }

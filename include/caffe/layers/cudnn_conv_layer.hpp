@@ -31,22 +31,24 @@ namespace caffe {
  * but for fully-convolutional models and large inputs the CAFFE engine can be
  * faster as long as it fits in memory.
 */
-template <typename Dtype>
-class CuDNNConvolutionLayer : public ConvolutionLayer<Dtype> {
+template<typename Dtype, typename MItype, typename MOtype>
+class CuDNNConvolutionLayer : public ConvolutionLayer<Dtype, MItype, MOtype> {
  public:
   explicit CuDNNConvolutionLayer(const LayerParameter& param)
-      : ConvolutionLayer<Dtype>(param), handles_setup_(false) {}
-  virtual void LayerSetUp(const vector<Blob<Dtype>*>& bottom,
-      const vector<Blob<Dtype>*>& top);
-  virtual void Reshape(const vector<Blob<Dtype>*>& bottom,
-      const vector<Blob<Dtype>*>& top);
+      : ConvolutionLayer<Dtype, MItype, MOtype>(param), handles_setup_(false) {
+    this->deconvolution_ = false;
+  }
+  virtual void LayerSetUp(const vector<Blob<MItype>*>& bottom,
+      const vector<Blob<MOtype>*>& top);
+  virtual void Reshape(const vector<Blob<MItype>*>& bottom,
+      const vector<Blob<MOtype>*>& top);
   virtual ~CuDNNConvolutionLayer();
 
  protected:
-  virtual void Forward_gpu(const vector<Blob<Dtype>*>& bottom,
-      const vector<Blob<Dtype>*>& top);
-  virtual void Backward_gpu(const vector<Blob<Dtype>*>& top,
-      const vector<bool>& propagate_down, const vector<Blob<Dtype>*>& bottom);
+  virtual void Forward_gpu(const vector<Blob<MItype>*>& bottom,
+      const vector<Blob<MOtype>*>& top);
+  virtual void Backward_gpu(const vector<Blob<MOtype>*>& top,
+      const vector<bool>& propagate_down, const vector<Blob<MItype>*>& bottom);
 
   bool handles_setup_;
   cudnnHandle_t* handle_;

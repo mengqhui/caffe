@@ -34,7 +34,7 @@ void mxCHECK_FILE_EXIST(const char* file) {
   std::ifstream f(file);
   if (!f.good()) {
     f.close();
-    std::string msg("Could not open file ");
+    string msg("Could not open file ");
     msg += file;
     mxERROR(msg.c_str());
   }
@@ -124,7 +124,7 @@ static mxArray* int_vec_to_mx_vec(const vector<int_tp>& int_vec) {
 }
 
 // Convert vector<string> to matlab cell vector of strings
-static mxArray* str_vec_to_mx_strcell(const vector<std::string>& str_vec) {
+static mxArray* str_vec_to_mx_strcell(const vector<string>& str_vec) {
   mxArray* mx_strcell = mxCreateCellMatrix(str_vec.size(), 1);
   for (int_tp i = 0; i < str_vec.size(); i++) {
     mxSetCell(mx_strcell, i, mxCreateString(str_vec[i].c_str()));

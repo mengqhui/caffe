@@ -11,15 +11,15 @@
 namespace caffe {
 
 
-template <typename Dtype>
-class MalisLossLayer : public LossLayer<Dtype> {
+template<typename Dtype, typename MItype, typename MOtype>
+class MalisLossLayer : public LossLayer<Dtype, MItype, MOtype> {
  public:
   explicit MalisLossLayer(const LayerParameter& param)
-      : LossLayer<Dtype>(param) {}
-  virtual void LayerSetUp(const vector<Blob<Dtype>*>& bottom,
-      const vector<Blob<Dtype>*>& top);
-  virtual void Reshape(const vector<Blob<Dtype>*>& bottom,
-      const vector<Blob<Dtype>*>& top);
+      : LossLayer<Dtype, MItype, MOtype>(param) {}
+  virtual void LayerSetUp(const vector<Blob<MItype>*>& bottom,
+      const vector<Blob<MOtype>*>& top);
+  virtual void Reshape(const vector<Blob<MItype>*>& bottom,
+      const vector<Blob<MOtype>*>& top);
 
   virtual inline const char* type() const { return "MalisLoss"; }
   virtual inline int_tp ExactNumBottomBlobs() const { return -1; }
@@ -30,10 +30,11 @@ class MalisLossLayer : public LossLayer<Dtype> {
   virtual inline int_tp MaxTopBlobs() const { return 2; }
 
  protected:
-  virtual void Forward_cpu(const vector<Blob<Dtype>*>& bottom,
-      const vector<Blob<Dtype>*>& top);
-  virtual void Backward_cpu(const vector<Blob<Dtype>*>& top,
-      const vector<bool>& propagate_down, const vector<Blob<Dtype>*>& bottom);
+  virtual void Forward_cpu(const vector<Blob<MItype>*>& bottom,
+      const vector<Blob<MOtype>*>& top);
+  virtual void Backward_cpu(const vector<Blob<MOtype>*>& top,
+      const vector<bool>& propagate_down,
+      const vector<Blob<MItype>*>& bottom);
 
  private:
   void Malis(const Dtype* conn_data, const int_tp conn_num_dims,
@@ -45,9 +46,9 @@ class MalisLossLayer : public LossLayer<Dtype> {
 
   int_tp nedges_;
   int_tp conn_num_dims_;
-  std::vector<int_tp> conn_dims_;
-  std::vector<int_tp> nhood_data_;
-  std::vector<int_tp> nhood_dims_;
+  vector<int_tp> conn_dims_;
+  vector<int_tp> nhood_data_;
+  vector<int_tp> nhood_dims_;
 
   Blob<Dtype> affinity_pos_;
   Blob<Dtype> affinity_neg_;

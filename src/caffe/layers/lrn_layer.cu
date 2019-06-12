@@ -1,62 +1,218 @@
 #include <vector>
 
 #include "caffe/layers/lrn_layer.hpp"
+#include "caffe/util/benchmark.hpp"
 #include "caffe/util/math_functions.hpp"
 
 namespace caffe {
 
-#ifdef USE_CUDA
-template<typename Dtype>
-__global__ void LRNFillScale(const int_tp nthreads, const Dtype* const in,
-                             const int_tp num, const int_tp channels,
-                             const int_tp height, const int_tp width,
-                             const int_tp size, const Dtype alpha_over_size,
-                             const Dtype k, Dtype* const scale) {
-  CUDA_KERNEL_LOOP(index, nthreads) {
+template<typename Dtype, typename MItype, typename MOtype>
+void LRNLayer<Dtype, MItype, MOtype>::GenerateProgram() {
+  this->device_program_ = this->device_->CreateProgram();
+  stringstream ss;
+
+  ss << this->device_program_->setup();
+  ss << this->device_program_->template define_type<Dtype>("Dtype");
+  ss << this->device_program_->template define_type<MItype>("MItype");
+  ss << this->device_program_->template define_type<MOtype>("MOtype");
+  ss << this->device_program_->template helper_functions<Dtype>();
+
+  {
+    KernelArgs args;
+    args.push_back(this->device_program_->template create_kernel_arg<uint_tp>(
+                      "nthreads", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<Dtype>(
+                      "in", KERNEL_ARG_CONST | KERNEL_ARG_GLOBAL_MEM));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "num", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "channels", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "height", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "width", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "size", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<Dtype>(
+                      "alpha_over_size", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<Dtype>(
+                      "k", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<Dtype>(
+                      "scale", KERNEL_ARG_GLOBAL_MEM));
+    ss << this->device_program_->function("LRNFillScale", args);
+    ss << this->device_program_->kernel_loop("uint_tp", "index", "nthreads");
     // find out the local offset
-    const int_tp w = index % width;
-    const int_tp h = (index / width) % height;
-    const int_tp n = index / width / height;
-    const int_tp offset = (n * channels * height + h) * width + w;
-    const int_tp step = height * width;
-    const Dtype* const in_off = in + offset;
-    Dtype* const scale_off = scale + offset;
-    int_tp head = 0;
-    const int_tp pre_pad = (size - 1) / 2;
-    const int_tp post_pad = size - pre_pad - 1;
-    Dtype accum_scale = 0;
+    ss << "const int_tp w = index % width;" << std::endl;
+    ss << "const int_tp h = (index / width) % height;" << std::endl;
+    ss << "const int_tp n = index / width / height;" << std::endl;
+    ss << "const int_tp offset = (n * channels * height + h) * width + w;"
+       << std::endl;
+    ss << "const int_tp step = height * width;" << std::endl;
+    ss << this->device_program_->global_ptr("const Dtype", "in_off")
+       << " = in + offset;" << std::endl;
+    ss << this->device_program_->global_ptr("Dtype", "scale_off")
+       << " = scale + offset;" << std::endl;
+    ss << "int_tp head = 0;" << std::endl;
+    ss << "const int_tp pre_pad = (size - 1) / 2;" << std::endl;
+    ss << "const int_tp post_pad = size - pre_pad - 1;" << std::endl;
+    ss << "Dtype accum_scale = 0;" << std::endl;
     // fill the scale at [n, :, h, w]
     // accumulate values
-    while (head < post_pad && head < channels) {
-      accum_scale += in_off[head * step] * in_off[head * step];
-      ++head;
-    }
+    ss << "while (head < post_pad && head < channels) {" << std::endl;
+    ss << "accum_scale += in_off[head * step] * in_off[head * step];"
+       << std::endl;
+    ss << "++head;" << std::endl;
+    ss << "}" << std::endl;
     // both add and subtract
-    while (head < channels) {
-      accum_scale += in_off[head * step] * in_off[head * step];
-      if (head - size >= 0) {
-        accum_scale -= in_off[(head - size) * step]
-            * in_off[(head - size) * step];
-      }
-      scale_off[(head - post_pad) * step] = k + accum_scale * alpha_over_size;
-      ++head;
-    }
+    ss << "while (head < channels) {" << std::endl;
+    ss << "accum_scale += in_off[head * step] * in_off[head * step];"
+       << std::endl;
+    ss << "if (head - size >= 0) {" << std::endl;
+    ss << "accum_scale -= in_off[(head - size) * step]"
+       << " * in_off[(head - size) * step];" << std::endl;
+    ss << "}" << std::endl;
+    ss << "scale_off[(head - post_pad) * step] = k + accum_scale"
+       << " * alpha_over_size;" << std::endl;
+    ss << "++head;" << std::endl;
+    ss << "}" << std::endl;
     // subtract only
-    while (head < channels + post_pad) {
-      if (head - size >= 0) {
-        accum_scale -= in_off[(head - size) * step]
-            * in_off[(head - size) * step];
-      }
-      scale_off[(head - post_pad) * step] = k + accum_scale * alpha_over_size;
-      ++head;
-    }
+    ss << "while (head < channels + post_pad) {" << std::endl;
+    ss << "if (head - size >= 0) {" << std::endl;
+    ss << "accum_scale -= in_off[(head - size) * step]"
+       << " * in_off[(head - size) * step];" << std::endl;
+    ss << "}" << std::endl;
+    ss << "scale_off[(head - post_pad) * step] = k + accum_scale"
+       << " * alpha_over_size;" << std::endl;
+    ss << "++head;" << std::endl;
+    ss << "}" << std::endl;
+    ss << "}" << std::endl;
+    ss << "}" << std::endl;
   }
-}
-#endif  // USE_CUDA
 
-template<typename Dtype>
-void LRNLayer<Dtype>::Forward_gpu(const vector<Blob<Dtype>*>& bottom,
-                                  const vector<Blob<Dtype>*>& top) {
+  // TODO: check if it would be faster to just put it into the previous kernel.
+  {
+    KernelArgs args;
+    args.push_back(this->device_program_->template create_kernel_arg<uint_tp>(
+                      "nthreads", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<Dtype>(
+                      "in", KERNEL_ARG_CONST | KERNEL_ARG_GLOBAL_MEM));
+    args.push_back(this->device_program_->template create_kernel_arg<Dtype>(
+                      "scale", KERNEL_ARG_CONST | KERNEL_ARG_GLOBAL_MEM));
+    args.push_back(this->device_program_->template create_kernel_arg<Dtype>(
+                      "negative_beta", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<Dtype>(
+                      "out", KERNEL_ARG_GLOBAL_MEM));
+    ss << this->device_program_->function("LRNComputeOutput", args);
+    ss << this->device_program_->kernel_loop("uint_tp", "index", "nthreads");
+    ss << "out[index] = in[index] * pow((Dtype)(scale[index]), "
+       << "(Dtype)(negative_beta));"
+       << std::endl;
+    ss << "}" << std::endl;
+    ss << "}" << std::endl;
+  }
+
+  {
+    KernelArgs args;
+    args.push_back(this->device_program_->template create_kernel_arg<uint_tp>(
+                      "nthreads", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<MItype>(
+                      "bottom_data", KERNEL_ARG_CONST | KERNEL_ARG_GLOBAL_MEM));
+    args.push_back(this->device_program_->template create_kernel_arg<MOtype>(
+                      "top_data", KERNEL_ARG_CONST | KERNEL_ARG_GLOBAL_MEM));
+    args.push_back(this->device_program_->template create_kernel_arg<Dtype>(
+                      "scale", KERNEL_ARG_CONST | KERNEL_ARG_GLOBAL_MEM));
+    args.push_back(this->device_program_->template create_kernel_arg<MOtype>(
+                      "top_diff", KERNEL_ARG_CONST | KERNEL_ARG_GLOBAL_MEM));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "num", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "channels", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "height", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "width", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                      "size", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<Dtype>(
+                      "negative_beta", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<Dtype>(
+                      "cache_ratio", KERNEL_ARG_CONST));
+    args.push_back(this->device_program_->template create_kernel_arg<MItype>(
+                      "bottom_diff", KERNEL_ARG_GLOBAL_MEM));
+    ss << this->device_program_->function("LRNComputeDiff", args);
+    ss << this->device_program_->kernel_loop("uint_tp", "index", "nthreads");
+
+    // find out the local offset
+    ss << "const int_tp w = index % width;" << std::endl;
+    ss << "const int_tp h = (index / width) % height;" << std::endl;
+    ss << "const int_tp n = index / width / height;" << std::endl;
+    ss << "const int_tp offset = (n * channels * height + h) * width + w;"
+       << std::endl;
+    ss << "const int_tp step = height * width;" << std::endl;
+    ss << this->device_program_->global_ptr("const Dtype", "bottom_off")
+       << " = bottom_data + offset;" << std::endl;
+    ss << this->device_program_->global_ptr("const Dtype", "top_off")
+       << " = top_data + offset;" << std::endl;
+    ss << this->device_program_->global_ptr("const Dtype", "scale_off")
+       << " = scale + offset;" << std::endl;
+    ss << this->device_program_->global_ptr("const Dtype", "top_diff_off")
+       << " = top_diff + offset;" << std::endl;
+    ss << this->device_program_->global_ptr("Dtype", "bottom_diff_off")
+       << " = bottom_diff + offset;" << std::endl;
+    ss << "int_tp head = 0;" << std::endl;
+    ss << "const int_tp pre_pad = size - (size + 1) / 2;" << std::endl;
+    ss << "const int_tp post_pad = size - pre_pad - 1;" << std::endl;
+    ss << "Dtype accum_ratio = 0;" << std::endl;
+    // accumulate values
+    ss << "while (head < post_pad && head < channels) {" << std::endl;
+    ss << "accum_ratio += top_diff_off[head * step] * top_off[head * step]"
+       << " / scale_off[head * step];" << std::endl;
+    ss << "++head;" << std::endl;
+    ss << "}" << std::endl;
+    // both add and subtract
+    ss << "while (head < channels) {" << std::endl;
+    ss << "accum_ratio += top_diff_off[head * step] * top_off[head * step]"
+       << " / scale_off[head * step];" << std::endl;
+    ss << "if (head - size >= 0) {" << std::endl;
+    ss << "accum_ratio -= top_diff_off[(head - size) * step]"
+       << " * top_off[(head - size) * step] / scale_off[(head - size) * step];"
+       << std::endl;
+    ss << "}" << std::endl;
+    ss << "bottom_diff_off[(head - post_pad) * step]"
+       << " = top_diff_off[(head - post_pad)"
+       << " * step] * pow((Dtype)(scale_off[(head - post_pad) * step]), "
+       << "(Dtype)(negative_beta))"
+       << " - cache_ratio * bottom_off[(head - post_pad) * step] * accum_ratio;"
+       << std::endl;
+    ss << "++head;" << std::endl;
+    ss << "}" << std::endl;
+    // subtract only
+    ss << "while (head < channels + post_pad) {" << std::endl;
+    ss << "if (head - size >= 0) {" << std::endl;
+    ss << "accum_ratio -= top_diff_off[(head - size) * step]"
+       << " * top_off[(head - size) * step] / scale_off[(head - size) * step];"
+       << std::endl;
+    ss << "}" << std::endl;
+    ss << "bottom_diff_off[(head - post_pad) * step]"
+       << " = top_diff_off[(head - post_pad)"
+       << " * step] * pow((Dtype)(scale_off[(head - post_pad) * step]), "
+       << "(Dtype)(negative_beta))"
+       << " - cache_ratio * bottom_off[(head - post_pad) * step] * accum_ratio;"
+       << std::endl;
+    ss << "++head;" << std::endl;
+    ss << "}" << std::endl;
+    ss << "}" << std::endl;
+    ss << "}" << std::endl;
+  }
+
+  this->device_program_->set_source(ss.str());
+  this->device_program_->Compile(true, true);
+}
+
+template<typename Dtype, typename MItype, typename MOtype>
+void LRNLayer<Dtype, MItype, MOtype>::Forward_gpu(
+                                    const vector<Blob<MItype>*>& bottom,
+                                    const vector<Blob<MOtype>*>& top) {
   switch (this->layer_param_.lrn_param().norm_region()) {
     case LRNParameter_NormRegion_ACROSS_CHANNELS:
       CrossChannelForward_gpu(bottom, top);
@@ -66,232 +222,150 @@ void LRNLayer<Dtype>::Forward_gpu(const vector<Blob<Dtype>*>& bottom,
       break;
     default:
       LOG(FATAL)<< "Unknown normalization region.";
-    }
-  }
-
-// TODO: check if it would be faster to just put it into the previous kernel.
-#ifdef USE_CUDA
-template<typename Dtype>
-__global__ void LRNComputeOutput(const int_tp nthreads, const Dtype* const in,
-                                 const Dtype* const scale,
-                                 const Dtype negative_beta, Dtype* const out) {
-  CUDA_KERNEL_LOOP(index, nthreads) {
-    out[index] = in[index] * pow(scale[index], negative_beta);
   }
 }
-#endif  // USE_CUDA
 
-template<typename Dtype>
-void LRNLayer<Dtype>::CrossChannelForward_gpu(
-    const vector<Blob<Dtype>*>& bottom, const vector<Blob<Dtype>*>& top) {
+
+template<typename Dtype, typename MItype, typename MOtype>
+void LRNLayer<Dtype, MItype, MOtype>::CrossChannelForward_gpu(
+                                    const vector<Blob<MItype>*>& bottom,
+                                    const vector<Blob<MOtype>*>& top) {
   // First, compute scale
-  const Dtype* bottom_data = bottom[0]->gpu_data();
-  Dtype* top_data = top[0]->mutable_gpu_data();
-  Dtype* scale_data = scale_.mutable_gpu_data();
+  vptr<const Dtype> bottom_data = bottom[0]->gpu_data();
+  vptr<Dtype> top_data = top[0]->mutable_gpu_data();
+  vptr<Dtype> scale_data = scale_.mutable_gpu_data();
+  Dtype neg_beta = -beta_;
 
-  if (this->device_->backend() == BACKEND_CUDA) {
-#ifdef USE_CUDA
-    // We will launch one kernel for each pixel location, and have the kernel
-    // go through all the channels.
-    int_tp n_threads = num_ * height_ * width_;
-    // NOLINT_NEXT_LINE(whitespace/operators)
-    LRNFillScale CUDA_KERNEL(CAFFE_GET_BLOCKS(n_threads),
-                             CAFFE_CUDA_NUM_THREADS)(
-        n_threads, bottom_data, num_, channels_, height_,
-        width_, size_,
-        alpha_ / size_, k_, scale_data);
-    CUDA_POST_KERNEL_CHECK;
-    n_threads = bottom[0]->count();
-    // NOLINT_NEXT_LINE(whitespace/operators)
-    LRNComputeOutput CUDA_KERNEL(CAFFE_GET_BLOCKS(n_threads),
-                                 CAFFE_CUDA_NUM_THREADS)(
-        n_threads, bottom_data, scale_data, -beta_, top_data);
-    CUDA_POST_KERNEL_CHECK;
-#endif  // USE_CUDA
-  } else {
-#ifdef USE_GREENTEA
-
-    viennacl::ocl::context &ctx = viennacl::ocl::get_context(
-        this->device_->id());
-    viennacl::ocl::program &program = this->device_->program();
-
-    int_tp n_threads = num_ * height_ * width_;
-    cl_uint argIdx = 0;
-    size_t global_work_size_[1] = {(size_t)n_threads};
-
-    if (this->phase_ == caffe::TRAIN) {
-      viennacl::ocl::kernel &oclk_lrn_fill = program.get_kernel(
-          CL_KERNEL_SELECT("lrn_full"));
-
-      oclk_lrn_fill.arg(argIdx++, n_threads);
-      oclk_lrn_fill.arg(argIdx++, WrapHandle((cl_mem) bottom_data, &ctx));
-      oclk_lrn_fill.arg(argIdx++, num_);
-      oclk_lrn_fill.arg(argIdx++, channels_);
-      oclk_lrn_fill.arg(argIdx++, height_);
-      oclk_lrn_fill.arg(argIdx++, width_);
-      oclk_lrn_fill.arg(argIdx++, size_);
-      oclk_lrn_fill.arg(argIdx++, alpha_ / size_);
-      oclk_lrn_fill.arg(argIdx++, k_);
-      oclk_lrn_fill.arg(argIdx++, WrapHandle((cl_mem) scale_data, &ctx));
-      oclk_lrn_fill.arg(argIdx++, WrapHandle((cl_mem) top_data, &ctx));
-      oclk_lrn_fill.arg(argIdx++, -beta_);
-
-      OCL_CHECK(clEnqueueNDRangeKernel(ctx.get_queue().handle().get(),
-                                     oclk_lrn_fill.handle().get(), 1, NULL,
-                                     global_work_size_, NULL, 0, NULL,
-                                     NULL));
-    } else {
-      viennacl::ocl::kernel &oclk_lrn_fill = program.get_kernel(
-          CL_KERNEL_SELECT("lrn_full_no_scale"));
-
-      cl_uint argIdx = 0;
-      oclk_lrn_fill.arg(argIdx++, n_threads);
-      oclk_lrn_fill.arg(argIdx++, WrapHandle((cl_mem) bottom_data, &ctx));
-      oclk_lrn_fill.arg(argIdx++, num_);
-      oclk_lrn_fill.arg(argIdx++, channels_);
-      oclk_lrn_fill.arg(argIdx++, height_);
-      oclk_lrn_fill.arg(argIdx++, width_);
-      oclk_lrn_fill.arg(argIdx++, size_);
-      oclk_lrn_fill.arg(argIdx++, alpha_ / size_);
-      oclk_lrn_fill.arg(argIdx++, k_);
-      oclk_lrn_fill.arg(argIdx++, WrapHandle((cl_mem) top_data, &ctx));
-      oclk_lrn_fill.arg(argIdx++, -beta_);
-
-      OCL_CHECK(clEnqueueNDRangeKernel(ctx.get_queue().handle().get(),
-                                       oclk_lrn_fill.handle().get(), 1, NULL,
-                                       global_work_size_, NULL, 0, NULL,
-                                       NULL));
-    }
-#endif  // USE_GREENTEA
-  }
-}
-template void LRNLayer<float>::CrossChannelForward_gpu(
-    const vector<Blob<float>*>& bottom, const vector<Blob<float>*>& top);
-template void LRNLayer<double>::CrossChannelForward_gpu(
-    const vector<Blob<double>*>& bottom, const vector<Blob<double>*>& top);
-
-template<typename Dtype>
-void LRNLayer<Dtype>::Backward_gpu(const vector<Blob<Dtype>*>& top,
-                                   const vector<bool>& propagate_down,
-                                   const vector<Blob<Dtype>*>& bottom) {
-  switch (this->layer_param_.lrn_param().norm_region()) {
-    case LRNParameter_NormRegion_ACROSS_CHANNELS:
-      CrossChannelBackward_gpu(top, propagate_down, bottom);
-      break;
-    case LRNParameter_NormRegion_WITHIN_CHANNEL:
-      WithinChannelBackward(top, propagate_down, bottom);
-      break;
-    default:
-      LOG(FATAL)<< "Unknown normalization region.";
-    }
-  }
-
-#ifdef USE_CUDA
-template<typename Dtype>
-__global__ void LRNComputeDiff(const int_tp nthreads,
-                               const Dtype* const bottom_data,
-                               const Dtype* const top_data,
-                               const Dtype* const scale,
-                               const Dtype* const top_diff, const int_tp num,
-                               const int_tp channels, const int_tp height,
-                               const int_tp width, const int_tp size,
-                               const Dtype negative_beta,
-                               const Dtype cache_ratio,
-                               Dtype* const bottom_diff) {
-  CUDA_KERNEL_LOOP(index, nthreads) {
-    // find out the local offset
-    const int_tp w = index % width;
-    const int_tp h = (index / width) % height;
-    const int_tp n = index / width / height;
-    const int_tp offset = (n * channels * height + h) * width + w;
-    const int_tp step = height * width;
-    const Dtype* const bottom_off = bottom_data + offset;
-    const Dtype* const top_off = top_data + offset;
-    const Dtype* const scale_off = scale + offset;
-    const Dtype* const top_diff_off = top_diff + offset;
-    Dtype* const bottom_diff_off = bottom_diff + offset;
-    int_tp head = 0;
-    const int_tp pre_pad = size - (size + 1) / 2;
-    const int_tp post_pad = size - pre_pad - 1;
-    Dtype accum_ratio = 0;
-    // accumulate values
-    while (head < post_pad && head < channels) {
-      accum_ratio += top_diff_off[head * step] * top_off[head * step]
-          / scale_off[head * step];
-      ++head;
-    }
-    // both add and subtract
-    while (head < channels) {
-      accum_ratio += top_diff_off[head * step] * top_off[head * step]
-          / scale_off[head * step];
-      if (head - size >= 0) {
-        accum_ratio -= top_diff_off[(head - size) * step]
-            * top_off[(head - size) * step] / scale_off[(head - size) * step];
-      }
-      bottom_diff_off[(head - post_pad) * step] = top_diff_off[(head - post_pad)
-          * step] * pow(scale_off[(head - post_pad) * step], negative_beta)
-          - cache_ratio * bottom_off[(head - post_pad) * step] * accum_ratio;
-      ++head;
-    }
-    // subtract only
-    while (head < channels + post_pad) {
-      if (head - size >= 0) {
-        accum_ratio -= top_diff_off[(head - size) * step]
-            * top_off[(head - size) * step] / scale_off[(head - size) * step];
-      }
-      bottom_diff_off[(head - post_pad) * step] = top_diff_off[(head - post_pad)
-          * step] * pow(scale_off[(head - post_pad) * step], negative_beta)
-          - cache_ratio * bottom_off[(head - post_pad) * step] * accum_ratio;
-      ++head;
-    }
-  }
-}
-#endif  // USE_CUDA
-
-template<typename Dtype>
-void LRNLayer<Dtype>::CrossChannelBackward_gpu(
-    const vector<Blob<Dtype>*>& top, const vector<bool>& propagate_down,
-    const vector<Blob<Dtype>*>& bottom) {
+  // We will launch one kernel for each pixel location, and have the kernel
+  // go through all the channels.
   int_tp n_threads = num_ * height_ * width_;
+  {
+    shared_ptr<DeviceKernel> kernel =
+                               this->device_program_->GetKernel("LRNFillScale");
+    kernel->add_arg(&n_threads);
+    kernel->add_arg(&bottom_data);
+    kernel->add_arg(&num_);
+    kernel->add_arg(&channels_);
+    kernel->add_arg(&height_);
+    kernel->add_arg(&width_);
+    kernel->add_arg(&size_);
+    Dtype alpha_size = alpha_ / size_;
+    kernel->add_arg(&alpha_size);
+    kernel->add_arg(&k_);
+    kernel->add_arg(&scale_data);
 
-  if (this->device_->backend() == BACKEND_CUDA) {
-#ifdef USE_CUDA
-    // NOLINT_NEXT_LINE(whitespace/operators)
-    LRNComputeDiff CUDA_KERNEL(CAFFE_GET_BLOCKS(n_threads),
-                               CAFFE_CUDA_NUM_THREADS)(
-        n_threads, bottom[0]->gpu_data(), top[0]->gpu_data(),
-        scale_.gpu_data(), top[0]->gpu_diff(), num_,
-        channels_, height_, width_,
-        size_, -beta_, Dtype(2. * alpha_ * beta_ / size_),
-        bottom[0]->mutable_gpu_diff());
-#endif  // USE_CUDA
-  } else {
-#ifdef USE_GREENTEA
-    viennacl::ocl::context &ctx = viennacl::ocl::get_context(
-        this->device_->id());
-    viennacl::ocl::program &program = this->device_->program();
+    vector<size_t> work_size(1, n_threads);
+    vector<size_t> group;
+    vector<size_t> local;
+    this->device_->get_threads(&work_size, &group, &local, kernel.get(), true);
+    kernel->Execute(group, local);
+  }
 
-    viennacl::ocl::kernel &oclk_lrn = program.get_kernel(
-        CL_KERNEL_SELECT("lrn_compute_diff"));
-    viennacl::ocl::enqueue(
-        oclk_lrn(n_threads, WrapHandle((cl_mem) (bottom[0]->gpu_data()), &ctx),
-                 WrapHandle((cl_mem) (top[0]->gpu_data()), &ctx),
-                 WrapHandle((cl_mem) (scale_.gpu_data()), &ctx),
-                 WrapHandle((cl_mem) (top[0]->gpu_diff()), &ctx), num_,
-                 channels_, height_, width_, size_, -beta_,
-                 Dtype(2. * alpha_ * beta_ / size_),
-                 WrapHandle((cl_mem) (bottom[0]->mutable_gpu_diff()), &ctx)),
-        ctx.get_queue());
-#endif  // USE_GREENTEA
+  n_threads = bottom[0]->count();
+  {
+    shared_ptr<DeviceKernel> kernel =
+                           this->device_program_->GetKernel("LRNComputeOutput");
+    kernel->add_arg(&n_threads);
+    kernel->add_arg(&bottom_data);
+    kernel->add_arg(&scale_data);
+    kernel->add_arg(&neg_beta);
+    kernel->add_arg(&top_data);
+
+    vector<size_t> work_size(1, n_threads);
+    vector<size_t> group;
+    vector<size_t> local;
+    this->device_->get_threads(&work_size, &group, &local, kernel.get(), true);
+    kernel->Execute(group, local);
   }
 }
-template void LRNLayer<float>::CrossChannelBackward_gpu(
-    const vector<Blob<float>*>& top, const vector<bool>& propagate_down,
-    const vector<Blob<float>*>& bottom);
-template void LRNLayer<double>::CrossChannelBackward_gpu(
-    const vector<Blob<double>*>& top, const vector<bool>& propagate_down,
-    const vector<Blob<double>*>& bottom);
 
-INSTANTIATE_LAYER_GPU_FUNCS(LRNLayer);
+template<typename Dtype, typename MItype, typename MOtype>
+void LRNLayer<Dtype, MItype, MOtype>::Backward_gpu(
+                                   const vector<Blob<MOtype>*>& top,
+                                   const vector<bool>& propagate_down,
+                                   const vector<Blob<MItype>*>& bottom) {
+switch (this->layer_param_.lrn_param().norm_region()) {
+  case LRNParameter_NormRegion_ACROSS_CHANNELS:
+    CrossChannelBackward_gpu(top, propagate_down, bottom);
+    break;
+  case LRNParameter_NormRegion_WITHIN_CHANNEL:
+    WithinChannelBackward(top, propagate_down, bottom);
+    break;
+  default:
+    LOG(FATAL)<< "Unknown normalization region.";
+  }
+}
+
+template<typename Dtype, typename MItype, typename MOtype>
+void LRNLayer<Dtype, MItype, MOtype>::CrossChannelBackward_gpu(
+    const vector<Blob<MOtype>*>& top, const vector<bool>& propagate_down,
+    const vector<Blob<MItype>*>& bottom) {
+  int_tp n_threads = num_ * height_ * width_;
+  Dtype neg_beta = -beta_;
+  Dtype cache_ratio = Dtype(2. * alpha_ * beta_ / size_);
+  vptr<const Dtype> bottom_data = bottom[0]->gpu_data();
+  vptr<const Dtype> top_data = top[0]->gpu_data();
+  vptr<const Dtype> scale_data = scale_.gpu_data();
+  vptr<const Dtype> top_diff = top[0]->gpu_diff();
+  vptr<Dtype> bottom_diff = bottom[0]->mutable_gpu_diff();
+
+  shared_ptr<DeviceKernel> kernel =
+                             this->device_program_->GetKernel("LRNComputeDiff");
+  kernel->add_arg(&n_threads);
+  kernel->add_arg(&bottom_data);
+  kernel->add_arg(&top_data);
+  kernel->add_arg(&scale_data);
+  kernel->add_arg(&top_diff);
+  kernel->add_arg(&num_);
+  kernel->add_arg(&channels_);
+  kernel->add_arg(&height_);
+  kernel->add_arg(&width_);
+  kernel->add_arg(&size_);
+  kernel->add_arg(&neg_beta);
+  kernel->add_arg(&cache_ratio);
+  kernel->add_arg(&bottom_diff);
+
+  vector<size_t> work_size(1, n_threads);
+  vector<size_t> group;
+  vector<size_t> local;
+  this->device_->get_threads(&work_size, &group, &local, kernel.get(), true);
+  kernel->Execute(group, local);
+}
+
+
+INSTANTIATE_CLASST_FUNC_3T_GUARDED(LRNLayer, GenerateProgram,
+                                  (half_fp), (half_fp), (half_fp));
+INSTANTIATE_CLASST_FUNC_3T_GUARDED(LRNLayer, GenerateProgram,
+                                  (float), (float), (float));
+INSTANTIATE_CLASST_FUNC_3T_GUARDED(LRNLayer, GenerateProgram,
+                                  (double), (double), (double));
+
+INSTANTIATE_CLASST_FUNC_3T_GUARDED(LRNLayer, Forward_gpu,
+                                  (half_fp), (half_fp), (half_fp));
+INSTANTIATE_CLASST_FUNC_3T_GUARDED(LRNLayer, Forward_gpu,
+                                  (float), (float), (float));
+INSTANTIATE_CLASST_FUNC_3T_GUARDED(LRNLayer, Forward_gpu,
+                                  (double), (double), (double));
+
+INSTANTIATE_CLASST_FUNC_3T_GUARDED(LRNLayer, CrossChannelForward_gpu,
+                                  (half_fp), (half_fp), (half_fp));
+INSTANTIATE_CLASST_FUNC_3T_GUARDED(LRNLayer, CrossChannelForward_gpu,
+                                  (float), (float), (float));
+INSTANTIATE_CLASST_FUNC_3T_GUARDED(LRNLayer, CrossChannelForward_gpu,
+                                  (double), (double), (double));
+
+INSTANTIATE_CLASST_FUNC_3T_GUARDED(LRNLayer, Backward_gpu,
+                                  (half_fp), (half_fp), (half_fp));
+INSTANTIATE_CLASST_FUNC_3T_GUARDED(LRNLayer, Backward_gpu,
+                                  (float), (float), (float));
+INSTANTIATE_CLASST_FUNC_3T_GUARDED(LRNLayer, Backward_gpu,
+                                  (double), (double), (double));
+
+INSTANTIATE_CLASST_FUNC_3T_GUARDED(LRNLayer, CrossChannelBackward_gpu,
+                                  (half_fp), (half_fp), (half_fp));
+INSTANTIATE_CLASST_FUNC_3T_GUARDED(LRNLayer, CrossChannelBackward_gpu,
+                                  (float), (float), (float));
+INSTANTIATE_CLASST_FUNC_3T_GUARDED(LRNLayer, CrossChannelBackward_gpu,
+                                  (double), (double), (double));
 
 }  // namespace caffe

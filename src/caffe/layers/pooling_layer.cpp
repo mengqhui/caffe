@@ -10,9 +10,10 @@ namespace caffe {
 using std::min;
 using std::max;
 
-template<typename Dtype>
-void PoolingLayer<Dtype>::LayerSetUp(const vector<Blob<Dtype>*>& bottom,
-                                         const vector<Blob<Dtype>*>& top) {
+template<typename Dtype, typename MItype, typename MOtype>
+void PoolingLayer<Dtype, MItype, MOtype>::LayerSetUp(
+                                        const vector<Blob<MItype>*>& bottom,
+                                        const vector<Blob<MOtype>*>& top) {
   PoolingParameter pool_param = this->layer_param_.pooling_param();
 
   // Set the max number of top blobs before calling base Layer::SetUp.
@@ -160,13 +161,15 @@ void PoolingLayer<Dtype>::LayerSetUp(const vector<Blob<Dtype>*>& bottom,
     }
   }
 
+  this->InitializeQuantizers(bottom, top);
   Reshape(bottom, top);
 }
 
 
-template <typename Dtype>
-void PoolingLayer<Dtype>::Reshape(const vector<Blob<Dtype>*>& bottom,
-      const vector<Blob<Dtype>*>& top) {
+template<typename Dtype, typename MItype, typename MOtype>
+void PoolingLayer<Dtype, MItype, MOtype>::Reshape(
+                                        const vector<Blob<MItype>*>& bottom,
+                                        const vector<Blob<MOtype>*>& top) {
   vector<int_tp> size_shape(1, num_spatial_axes_);
 
   size_.Reshape(size_shape);
@@ -222,11 +225,16 @@ void PoolingLayer<Dtype>::Reshape(const vector<Blob<Dtype>*>& bottom,
       PoolingParameter_PoolMethod_STOCHASTIC) {
     rand_idx_.Reshape(top_shape);
   }
+
+  if (Caffe::mode() == Caffe::GPU && this->device_program_.get() == nullptr) {
+    this->GenerateProgram();
+  }
 }
 
-template <typename Dtype>
-void PoolingLayer<Dtype>::Forward_cpu(const vector<Blob<Dtype>*>& bottom,
-      const vector<Blob<Dtype>*>& top) {
+template<typename Dtype, typename MItype, typename MOtype>
+void PoolingLayer<Dtype, MItype, MOtype>::Forward_cpu(
+                                        const vector<Blob<MItype>*>& bottom,
+                                        const vector<Blob<MOtype>*>& top) {
   int_tp kernel_h_ = kernel_shape_.cpu_data()[0];
   int_tp kernel_w_ = kernel_shape_.cpu_data()[1];
   int_tp stride_h_ = stride_.cpu_data()[0];
@@ -238,26 +246,31 @@ void PoolingLayer<Dtype>::Forward_cpu(const vector<Blob<Dtype>*>& bottom,
   int_tp pooled_height_ = pooled_size_.cpu_data()[0];
   int_tp pooled_width_ = pooled_size_.cpu_data()[1];
 
-  const Dtype* bottom_data = bottom[0]->cpu_data();
-  Dtype* top_data = top[0]->mutable_cpu_data();
+  const MItype* bottom_data = bottom[0]->cpu_data();
+  MOtype* top_data = top[0]->mutable_cpu_data();
   const int_tp top_count = top[0]->count();
   // We'll output the mask to top[1] if it's of size >1.
   const bool use_top_mask = top.size() > 1;
   int_tp* mask = NULL;  // suppress warnings about uninitalized variables
-  Dtype* top_mask = NULL;
+  MOtype* top_mask = NULL;
   // Different pooling methods. We explicitly do the switch outside the for
   // loop to save time, although this results in more code.
+
+  Dtype maxVal = FLT_MAX;
+  if (std::is_same<MOtype, half_fp>::value) {
+    maxVal = HALF_MAX;
+  }
   switch (this->layer_param_.pooling_param().pool()) {
   case PoolingParameter_PoolMethod_MAX:
     // Initialize
     if (use_top_mask) {
       top_mask = top[1]->mutable_cpu_data();
-      caffe_set(top_count, Dtype(-1), top_mask);
+      caffe_set(top_count, MOtype(-1), top_mask);
     } else {
       mask = max_idx_.mutable_cpu_data();
       caffe_set(top_count, (int_tp)-1, mask);
     }
-    caffe_set(top_count, Dtype(-FLT_MAX), top_data);
+    caffe_set(top_count, MOtype(-maxVal), top_data);
     // The main loop
     for (int_tp n = 0; n < bottom[0]->num(); ++n) {
       for (int_tp c = 0; c < channels_; ++c) {
@@ -337,9 +350,11 @@ void PoolingLayer<Dtype>::Forward_cpu(const vector<Blob<Dtype>*>& bottom,
   }
 }
 
-template <typename Dtype>
-void PoolingLayer<Dtype>::Backward_cpu(const vector<Blob<Dtype>*>& top,
-      const vector<bool>& propagate_down, const vector<Blob<Dtype>*>& bottom) {
+template<typename Dtype, typename MItype, typename MOtype>
+void PoolingLayer<Dtype, MItype, MOtype>::Backward_cpu(
+                                        const vector<Blob<MOtype>*>& top,
+                                        const vector<bool>& propagate_down,
+                                        const vector<Blob<MItype>*>& bottom) {
   int_tp kernel_h_ = kernel_shape_.cpu_data()[0];
   int_tp kernel_w_ = kernel_shape_.cpu_data()[1];
   int_tp stride_h_ = stride_.cpu_data()[0];
@@ -354,15 +369,15 @@ void PoolingLayer<Dtype>::Backward_cpu(const vector<Blob<Dtype>*>& top,
   if (!propagate_down[0]) {
     return;
   }
-  const Dtype* top_diff = top[0]->cpu_diff();
-  Dtype* bottom_diff = bottom[0]->mutable_cpu_diff();
+  const MOtype* top_diff = top[0]->cpu_diff();
+  MItype* bottom_diff = bottom[0]->mutable_cpu_diff();
   // Different pooling methods. We explicitly do the switch outside the for
   // loop to save time, although this results in more codes.
   caffe_set(bottom[0]->count(), Dtype(0), bottom_diff);
   // We'll output the mask to top[1] if it's of size >1.
   const bool use_top_mask = top.size() > 1;
   const int_tp* mask = NULL;  // suppress warnings about uninitialized variables
-  const Dtype* top_mask = NULL;
+  const MOtype* top_mask = NULL;
   switch (this->layer_param_.pooling_param().pool()) {
   case PoolingParameter_PoolMethod_MAX:
     // The main loop
@@ -377,7 +392,7 @@ void PoolingLayer<Dtype>::Backward_cpu(const vector<Blob<Dtype>*>& top,
           for (int_tp pw = 0; pw < pooled_width_; ++pw) {
             const int_tp index = ph * pooled_width_ + pw;
             const int_tp bottom_index =
-                use_top_mask ? top_mask[index] : mask[index];
+                use_top_mask ? int_tp(top_mask[index]) : mask[index];
             bottom_diff[bottom_index] += top_diff[index];
           }
         }
@@ -432,6 +447,19 @@ void PoolingLayer<Dtype>::Backward_cpu(const vector<Blob<Dtype>*>& top,
 STUB_GPU(PoolingLayer);
 #endif
 
-INSTANTIATE_CLASS(PoolingLayer);
+INSTANTIATE_CLASS_3T_GUARDED(PoolingLayer, (half_fp), (half_fp),
+                             PROTO_TYPES);
+INSTANTIATE_CLASS_3T_GUARDED(PoolingLayer, (float), (float),
+                             PROTO_TYPES);
+INSTANTIATE_CLASS_3T_GUARDED(PoolingLayer, (double), (double),
+                             PROTO_TYPES);
+INSTANTIATE_CLASS_3T_GUARDED(PoolingLayer, (uint8_t), (uint8_t),
+                             PROTO_TYPES);
+INSTANTIATE_CLASS_3T_GUARDED(PoolingLayer, (uint16_t), (uint16_t),
+                             PROTO_TYPES);
+INSTANTIATE_CLASS_3T_GUARDED(PoolingLayer, (uint32_t), (uint32_t),
+                             PROTO_TYPES);
+INSTANTIATE_CLASS_3T_GUARDED(PoolingLayer, (uint64_t), (uint64_t),
+                             PROTO_TYPES);
 
 }    // namespace caffe

@@ -64,7 +64,7 @@ class PoolingNDSKLayerTest : public GPUDeviceTest<TypeParam> {
 
     pooling_param->set_axis(1);
 
-    PoolingLayer<TypeParam> layer(layer_param);
+    PoolingLayer<TypeParam, TypeParam, TypeParam> layer(layer_param);
     layer.SetUp(this->blob_bottom_vec_, this->blob_top_vec_);
 
     int_tp d = blob_bottom_->shape(2);
@@ -109,7 +109,7 @@ class PoolingNDSKLayerTest : public GPUDeviceTest<TypeParam> {
 
     pooling_param->set_axis(1);
 
-    PoolingLayer<TypeParam> layer(layer_param);
+    PoolingLayer<TypeParam, TypeParam, TypeParam> layer(layer_param);
     layer.SetUp(this->blob_bottom_vec_, this->blob_top_vec_);
 
     int_tp d = blob_bottom_->shape(2);
@@ -137,7 +137,7 @@ class PoolingNDSKLayerTest : public GPUDeviceTest<TypeParam> {
     TypeParam *top_diff = blob_top_->mutable_cpu_diff();
     top_diff[0] = maxval;
 
-    std::vector<bool> prop_down;
+    vector<bool> prop_down;
     prop_down.push_back(true);
 
     layer.Backward(this->blob_top_vec_, prop_down, this->blob_bottom_vec_);
@@ -162,7 +162,7 @@ class PoolingNDSKLayerTest : public GPUDeviceTest<TypeParam> {
   vector<Blob<TypeParam>*> blob_top_vec_;
 };
 
-TYPED_TEST_CASE(PoolingNDSKLayerTest, TestDtypes);
+TYPED_TEST_CASE(PoolingNDSKLayerTest, TestDtypesFloat);
 
 TYPED_TEST(PoolingNDSKLayerTest, TestSetup) {
   LayerParameter layer_param;
@@ -180,7 +180,7 @@ TYPED_TEST(PoolingNDSKLayerTest, TestSetup) {
   pooling_param->set_pool(PoolingParameter_PoolMethod_MAX);
 
 
-  PoolingLayer<TypeParam> layer(layer_param);
+  PoolingLayer<TypeParam, TypeParam, TypeParam> layer(layer_param);
   layer.SetUp(this->blob_bottom_vec_, this->blob_top_vec_);
 
   EXPECT_EQ(1, this->blob_top_->shape(2));

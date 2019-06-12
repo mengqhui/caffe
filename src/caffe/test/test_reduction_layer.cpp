@@ -40,8 +40,8 @@ class ReductionLayerTest : public MultiDeviceTest<TypeParam> {
     reduction_param->set_operation(op);
     if (coeff != 1.0) { reduction_param->set_coeff(coeff); }
     if (axis != 0) { reduction_param->set_axis(axis); }
-    shared_ptr<ReductionLayer<Dtype> > layer(
-        new ReductionLayer<Dtype>(layer_param));
+    shared_ptr<ReductionLayer<Dtype, Dtype, Dtype> > layer(
+        new ReductionLayer<Dtype, Dtype, Dtype>(layer_param));
     layer->SetUp(this->blob_bottom_vec_, this->blob_top_vec_);
     layer->Forward(this->blob_bottom_vec_, this->blob_top_vec_);
     const Dtype* in_data = this->blob_bottom_->cpu_data();
@@ -71,7 +71,9 @@ class ReductionLayerTest : public MultiDeviceTest<TypeParam> {
       }
       expected_result *= coeff;
       const Dtype computed_result = this->blob_top_->cpu_data()[n];
-      EXPECT_FLOAT_EQ(expected_result, computed_result)
+      Dtype eps = std::is_same<Dtype, half_fp>::value ?
+                  5e-2 : 1e-4;
+      EXPECT_NEAR(expected_result, computed_result, eps * expected_result)
           << "Incorrect result computed with op "
           << ReductionParameter_ReductionOp_Name(op) << ", coeff " << coeff;
     }
@@ -85,7 +87,7 @@ class ReductionLayerTest : public MultiDeviceTest<TypeParam> {
     reduction_param->set_operation(op);
     reduction_param->set_coeff(coeff);
     reduction_param->set_axis(axis);
-    ReductionLayer<Dtype> layer(layer_param);
+    ReductionLayer<Dtype, Dtype, Dtype> layer(layer_param);
     GradientChecker<Dtype> checker(1e-2, 2e-3);
     checker.CheckGradientExhaustive(&layer, this->blob_bottom_vec_,
         this->blob_top_vec_);
@@ -97,13 +99,13 @@ class ReductionLayerTest : public MultiDeviceTest<TypeParam> {
   vector<Blob<Dtype>*> blob_top_vec_;
 };
 
-TYPED_TEST_CASE(ReductionLayerTest, TestDtypesAndDevices);
+TYPED_TEST_CASE(ReductionLayerTest, TestDtypesFloatAndDevices);
 
 TYPED_TEST(ReductionLayerTest, TestSetUp) {
   typedef typename TypeParam::Dtype Dtype;
   LayerParameter layer_param;
-  shared_ptr<ReductionLayer<Dtype> > layer(
-      new ReductionLayer<Dtype>(layer_param));
+  shared_ptr<ReductionLayer<Dtype, Dtype, Dtype> > layer(
+      new ReductionLayer<Dtype, Dtype, Dtype>(layer_param));
   layer->SetUp(this->blob_bottom_vec_, this->blob_top_vec_);
   ASSERT_EQ(this->blob_top_->num_axes(), 0);
 }
@@ -112,8 +114,8 @@ TYPED_TEST(ReductionLayerTest, TestSetUpWithAxis1) {
   typedef typename TypeParam::Dtype Dtype;
   LayerParameter layer_param;
   layer_param.mutable_reduction_param()->set_axis(1);
-  shared_ptr<ReductionLayer<Dtype> > layer(
-      new ReductionLayer<Dtype>(layer_param));
+  shared_ptr<ReductionLayer<Dtype, Dtype, Dtype> > layer(
+      new ReductionLayer<Dtype, Dtype, Dtype>(layer_param));
   layer->SetUp(this->blob_bottom_vec_, this->blob_top_vec_);
   ASSERT_EQ(this->blob_top_->num_axes(), 1);
   EXPECT_EQ(this->blob_top_->shape(0), 2);
@@ -123,8 +125,8 @@ TYPED_TEST(ReductionLayerTest, TestSetUpWithAxis2) {
   typedef typename TypeParam::Dtype Dtype;
   LayerParameter layer_param;
   layer_param.mutable_reduction_param()->set_axis(2);
-  shared_ptr<ReductionLayer<Dtype> > layer(
-      new ReductionLayer<Dtype>(layer_param));
+  shared_ptr<ReductionLayer<Dtype, Dtype, Dtype> > layer(
+      new ReductionLayer<Dtype, Dtype, Dtype>(layer_param));
   layer->SetUp(this->blob_bottom_vec_, this->blob_top_vec_);
   ASSERT_EQ(this->blob_top_->num_axes(), 2);
   EXPECT_EQ(this->blob_top_->shape(0), 2);

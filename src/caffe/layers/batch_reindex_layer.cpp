@@ -5,9 +5,10 @@
 
 namespace caffe {
 
-template<typename Dtype>
-void BatchReindexLayer<Dtype>::Reshape(const vector<Blob<Dtype>*>& bottom,
-                                       const vector<Blob<Dtype>*>& top) {
+template<typename Dtype, typename MItype, typename MOtype>
+void BatchReindexLayer<Dtype, MItype, MOtype>::Reshape(
+                                       const vector<Blob<MItype>*>& bottom,
+                                       const vector<Blob<MOtype>*>& top) {
   CHECK_EQ(1, bottom[1]->num_axes());
   vector<int_tp> newshape;
   newshape.push_back(bottom[1]->shape(0));
@@ -15,10 +16,15 @@ void BatchReindexLayer<Dtype>::Reshape(const vector<Blob<Dtype>*>& bottom,
     newshape.push_back(bottom[0]->shape()[i]);
   }
   top[0]->Reshape(newshape);
+
+  if (Caffe::mode() == Caffe::GPU && this->device_program_.get() == nullptr) {
+    this->GenerateProgram();
+  }
 }
 
-template<typename Dtype>
-void BatchReindexLayer<Dtype>::check_batch_reindex(int_tp initial_num,
+template<typename Dtype, typename MItype, typename MOtype>
+void BatchReindexLayer<Dtype, MItype, MOtype>::check_batch_reindex(
+                                                   int_tp initial_num,
                                                    int_tp final_num,
                                                    const Dtype* ridx_data) {
   for (int_tp i = 0; i < final_num; ++i) {
@@ -29,9 +35,10 @@ void BatchReindexLayer<Dtype>::check_batch_reindex(int_tp initial_num,
   }
 }
 
-template<typename Dtype>
-void BatchReindexLayer<Dtype>::Forward_cpu(const vector<Blob<Dtype>*>& bottom,
-                                           const vector<Blob<Dtype>*>& top) {
+template<typename Dtype, typename MItype, typename MOtype>
+void BatchReindexLayer<Dtype, MItype, MOtype>::Forward_cpu(
+                                           const vector<Blob<MItype>*>& bottom,
+                                           const vector<Blob<MOtype>*>& top) {
   check_batch_reindex(bottom[0]->shape(0), bottom[1]->count(),
                       bottom[1]->cpu_data());
   if (top[0]->count() == 0) {
@@ -48,10 +55,10 @@ void BatchReindexLayer<Dtype>::Forward_cpu(const vector<Blob<Dtype>*>& bottom,
   }
 }
 
-template<typename Dtype>
-void BatchReindexLayer<Dtype>::Backward_cpu(
-    const vector<Blob<Dtype>*>& top, const vector<bool>& propagate_down,
-    const vector<Blob<Dtype>*>& bottom) {
+template<typename Dtype, typename MItype, typename MOtype>
+void BatchReindexLayer<Dtype, MItype, MOtype>::Backward_cpu(
+    const vector<Blob<MOtype>*>& top, const vector<bool>& propagate_down,
+    const vector<Blob<MItype>*>& bottom) {
   CHECK(!propagate_down[1]) << "Cannot backprop to index.";
   if (!propagate_down[0]) {
     return;
@@ -72,7 +79,16 @@ void BatchReindexLayer<Dtype>::Backward_cpu(
 STUB_GPU(BatchReindexLayer);
 #endif
 
-INSTANTIATE_CLASS(BatchReindexLayer);
+INSTANTIATE_CLASS_3T_GUARDED(BatchReindexLayer,
+                             (half_fp), (half_fp), (half_fp));
+INSTANTIATE_CLASS_3T_GUARDED(BatchReindexLayer,
+                             (float), (float), (float));
+INSTANTIATE_CLASS_3T_GUARDED(BatchReindexLayer,
+                             (double), (double), (double));
+
 REGISTER_LAYER_CLASS(BatchReindex);
+REGISTER_LAYER_CLASS_INST(BatchReindex, (half_fp), (half_fp), (half_fp));
+REGISTER_LAYER_CLASS_INST(BatchReindex, (float), (float), (float));
+REGISTER_LAYER_CLASS_INST(BatchReindex, (double), (double), (double));
 
 }  // namespace caffe

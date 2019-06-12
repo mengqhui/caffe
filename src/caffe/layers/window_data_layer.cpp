@@ -27,14 +27,16 @@
 
 namespace caffe {
 
-template <typename Dtype>
-WindowDataLayer<Dtype>::~WindowDataLayer<Dtype>() {
+template<typename Dtype, typename MItype, typename MOtype>
+WindowDataLayer<Dtype, MItype, MOtype>::
+  ~WindowDataLayer<Dtype, MItype, MOtype>() {
   this->StopInternalThread();
 }
 
-template <typename Dtype>
-void WindowDataLayer<Dtype>::DataLayerSetUp(const vector<Blob<Dtype>*>& bottom,
-      const vector<Blob<Dtype>*>& top) {
+template<typename Dtype, typename MItype, typename MOtype>
+void WindowDataLayer<Dtype, MItype, MOtype>::DataLayerSetUp(
+      const vector<Blob<MItype>*>& bottom,
+      const vector<Blob<MOtype>*>& top) {
   // LayerSetUp runs through the window_file and creates two structures
   // that hold windows: one for foreground (object) windows and one
   // for background (non-object) windows. We use an overlap threshold
@@ -80,7 +82,7 @@ void WindowDataLayer<Dtype>::DataLayerSetUp(const vector<Blob<Dtype>*>& bottom,
       << this->layer_param_.window_data_param().source() << std::endl;
 
   map<int_tp, int_tp> label_hist;
-  label_hist.insert(std::make_pair(0, 0));
+  label_hist.insert(make_pair(0, 0));
 
   string hashtag;
   int_tp image_index, channels;
@@ -97,7 +99,7 @@ void WindowDataLayer<Dtype>::DataLayerSetUp(const vector<Blob<Dtype>*>& bottom,
     vector<int_tp> image_size(3);
     infile >> image_size[0] >> image_size[1] >> image_size[2];
     channels = image_size[0];
-    image_database_.push_back(std::make_pair(image_path, image_size));
+    image_database_.push_back(make_pair(image_path, image_size));
 
     if (cache_images_) {
       Datum datum;
@@ -105,7 +107,7 @@ void WindowDataLayer<Dtype>::DataLayerSetUp(const vector<Blob<Dtype>*>& bottom,
         LOG(ERROR) << "Could not open or find file " << image_path;
         return;
       }
-      image_database_cache_.push_back(std::make_pair(image_path, datum));
+      image_database_cache_.push_back(make_pair(image_path, datum));
     }
     // read each box
     int_tp num_windows;
@@ -133,7 +135,7 @@ void WindowDataLayer<Dtype>::DataLayerSetUp(const vector<Blob<Dtype>*>& bottom,
         int_tp label = window[WindowDataLayer::LABEL];
         CHECK_GT(label, 0);
         fg_windows_.push_back(window);
-        label_hist.insert(std::make_pair(label, 0));
+        label_hist.insert(make_pair(label, 0));
         label_hist[label]++;
       } else if (overlap < bg_threshold) {
         // background window, force label and overlap to 0
@@ -215,8 +217,8 @@ void WindowDataLayer<Dtype>::DataLayerSetUp(const vector<Blob<Dtype>*>& bottom,
   }
 }
 
-template <typename Dtype>
-uint_tp WindowDataLayer<Dtype>::PrefetchRand() {
+template<typename Dtype, typename MItype, typename MOtype>
+uint_tp WindowDataLayer<Dtype, MItype, MOtype>::PrefetchRand() {
   CHECK(prefetch_rng_);
   caffe::rng_t* prefetch_rng =
       static_cast<caffe::rng_t*>(prefetch_rng_->generator());
@@ -224,10 +226,10 @@ uint_tp WindowDataLayer<Dtype>::PrefetchRand() {
 }
 
 // This function is called on prefetch thread
-template <typename Dtype>
-void WindowDataLayer<Dtype>::load_batch(Batch<Dtype>* batch) {
-  // At each iteration, sample N windows where N*p are foreground (object)
-  // windows and N*(1-p) are background (non-object) windows
+template<typename Dtype, typename MItype, typename MOtype>
+void WindowDataLayer<Dtype, MItype, MOtype>::load_batch(Batch<MOtype>* batch) {
+  // At each iteration, sample n windows where n*p are foreground (object)
+  // windows and n*(1-p) are background (non-object) windows
   CPUTimer batch_timer;
   batch_timer.Start();
   double read_time = 0;
@@ -282,13 +284,13 @@ void WindowDataLayer<Dtype>::load_batch(Batch<Dtype>* batch) {
       bool do_mirror = mirror && PrefetchRand() % 2;
 
       // load the image containing the window
-      pair<std::string, vector<int_tp> > image =
-          image_database_[window[WindowDataLayer<Dtype>::IMAGE_INDEX]];
+      pair<string, vector<int_tp> > image =
+          image_database_[window[WindowDataLayer<Dtype, MItype, MOtype>::IMAGE_INDEX]];
 
       cv::Mat cv_img;
       if (this->cache_images_) {
-        pair<std::string, Datum> image_cached =
-          image_database_cache_[window[WindowDataLayer<Dtype>::IMAGE_INDEX]];
+        pair<string, Datum> image_cached =
+          image_database_cache_[window[WindowDataLayer<Dtype, MItype, MOtype>::IMAGE_INDEX]];
         cv_img = DecodeDatumToCVMat(image_cached.second, true);
       } else {
         cv_img = cv::imread(image.first, CV_LOAD_IMAGE_COLOR);
@@ -302,16 +304,16 @@ void WindowDataLayer<Dtype>::load_batch(Batch<Dtype>* batch) {
       const int_tp channels = cv_img.channels();
 
       // crop window out of image and warp it
-      int_tp x1 = window[WindowDataLayer<Dtype>::X1];
-      int_tp y1 = window[WindowDataLayer<Dtype>::Y1];
-      int_tp x2 = window[WindowDataLayer<Dtype>::X2];
-      int_tp y2 = window[WindowDataLayer<Dtype>::Y2];
+      int_tp x1 = window[WindowDataLayer<Dtype, MItype, MOtype>::X1];
+      int_tp y1 = window[WindowDataLayer<Dtype, MItype, MOtype>::Y1];
+      int_tp x2 = window[WindowDataLayer<Dtype, MItype, MOtype>::X2];
+      int_tp y2 = window[WindowDataLayer<Dtype, MItype, MOtype>::Y2];
 
       int_tp pad_w = 0;
       int_tp pad_h = 0;
       if (context_pad > 0 || use_square) {
         // scale factor by which to expand the original region
-        // such that after warping the expanded region to crop_size x crop_size
+        // such that after warping the expanded region to crop_size X crop_size
         // there's exactly context_pad amount of padding on each side
         Dtype context_scale = static_cast<Dtype>(crop_size) /
             static_cast<Dtype>(crop_size - 2*context_pad);
@@ -382,7 +384,7 @@ void WindowDataLayer<Dtype>::load_batch(Batch<Dtype>* batch) {
         }
 
         // ensure that the warped, clipped region plus the padding fits in the
-        // crop_size x crop_size image (it might not due to rounding)
+        // crop_size X crop_size image (it might not due to rounding)
         if (pad_h + cv_crop_size.height > crop_size) {
           cv_crop_size.height = crop_size - pad_h;
         }
@@ -428,21 +430,21 @@ void WindowDataLayer<Dtype>::load_batch(Batch<Dtype>* batch) {
       }
       trans_time += timer.MicroSeconds();
       // get window label
-      top_label[item_id] = window[WindowDataLayer<Dtype>::LABEL];
+      top_label[item_id] = window[WindowDataLayer<Dtype, MItype, MOtype>::LABEL];
 
       #if 0
       // useful debugging code for dumping transformed windows to disk
       string file_id;
-      std::stringstream ss;
+      stringstream ss;
       ss << PrefetchRand();
       ss >> file_id;
       std::ofstream inf((string("dump/") + file_id +
           string("_info.txt")).c_str(), std::ofstream::out);
       inf << image.first << std::endl
-          << window[WindowDataLayer<Dtype>::X1]+1 << std::endl
-          << window[WindowDataLayer<Dtype>::Y1]+1 << std::endl
-          << window[WindowDataLayer<Dtype>::X2]+1 << std::endl
-          << window[WindowDataLayer<Dtype>::Y2]+1 << std::endl
+          << window[WindowDataLayer<Dtype, MItype, MOtype>::X1]+1 << std::endl
+          << window[WindowDataLayer<Dtype, MItype, MOtype>::Y1]+1 << std::endl
+          << window[WindowDataLayer<Dtype, MItype, MOtype>::X2]+1 << std::endl
+          << window[WindowDataLayer<Dtype, MItype, MOtype>::Y2]+1 << std::endl
           << do_mirror << std::endl
           << top_label[item_id] << std::endl
           << is_fg << std::endl;
@@ -472,8 +474,14 @@ void WindowDataLayer<Dtype>::load_batch(Batch<Dtype>* batch) {
   DLOG(INFO) << "Transform time: " << trans_time / 1000 << " ms.";
 }
 
-INSTANTIATE_CLASS(WindowDataLayer);
+INSTANTIATE_CLASS_3T_GUARDED(WindowDataLayer, (half_fp), (half_fp), (half_fp));
+INSTANTIATE_CLASS_3T_GUARDED(WindowDataLayer, (float), (float), (float));
+INSTANTIATE_CLASS_3T_GUARDED(WindowDataLayer, (double), (double), (double));
+
 REGISTER_LAYER_CLASS(WindowData);
+REGISTER_LAYER_CLASS_INST(WindowData, (half_fp), (half_fp), (half_fp));
+REGISTER_LAYER_CLASS_INST(WindowData, (float), (float), (float));
+REGISTER_LAYER_CLASS_INST(WindowData, (double), (double), (double));
 
 }  // namespace caffe
 #endif  // USE_OPENCV

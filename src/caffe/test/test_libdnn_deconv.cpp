@@ -17,7 +17,7 @@
 // Comparative check difference limit
 #define kappa 0.05
 // Comparative check shape size limit
-#define element_limit 100
+#define ELEMENT_LIMIT 1000000
 
 namespace caffe {
 
@@ -55,7 +55,7 @@ class LibDNNDeconvolutionLayerTest : public GPUDeviceTest<Dtype> {
   vector<Blob<Dtype>*> blob_top_vec_;
 };
 
-TYPED_TEST_CASE(LibDNNDeconvolutionLayerTest, TestDtypes);
+TYPED_TEST_CASE(LibDNNDeconvolutionLayerTest, TestDtypesFloat);
 
 TYPED_TEST(LibDNNDeconvolutionLayerTest, TestSetup) {
   LayerParameter layer_param;
@@ -66,8 +66,8 @@ TYPED_TEST(LibDNNDeconvolutionLayerTest, TestSetup) {
   convolution_param->set_num_output(4);
   this->blob_bottom_vec_.push_back(this->blob_bottom_2_);
   this->blob_top_vec_.push_back(this->blob_top_2_);
-  shared_ptr<Layer<TypeParam> > layer(
-      new LibDNNDeconvolutionLayer<TypeParam>(layer_param));
+  shared_ptr<Layer<TypeParam, TypeParam, TypeParam> > layer(
+      new LibDNNDeconvolutionLayer<TypeParam, TypeParam, TypeParam>(layer_param));
   layer->SetUp(this->blob_bottom_vec_, this->blob_top_vec_);
   EXPECT_EQ(this->blob_top_->num(), 2);
   EXPECT_EQ(this->blob_top_->channels(), 4);
@@ -80,7 +80,7 @@ TYPED_TEST(LibDNNDeconvolutionLayerTest, TestSetup) {
   // setting group should not change the shape
   convolution_param->set_num_output(3);
   convolution_param->set_group(3);
-  layer.reset(new LibDNNDeconvolutionLayer<TypeParam>(layer_param));
+  layer.reset(new LibDNNDeconvolutionLayer<TypeParam, TypeParam, TypeParam>(layer_param));
   layer->SetUp(this->blob_bottom_vec_, this->blob_top_vec_);
   EXPECT_EQ(this->blob_top_->num(), 2);
   EXPECT_EQ(this->blob_top_->channels(), 3);
@@ -105,8 +105,8 @@ TYPED_TEST(LibDNNDeconvolutionLayerTest, TestSimpleDeconvolution) {
   convolution_param->mutable_weight_filler()->set_value(1);
   convolution_param->mutable_bias_filler()->set_type("constant");
   convolution_param->mutable_bias_filler()->set_value(0.1);
-  shared_ptr<Layer<TypeParam> > layer(
-      new LibDNNDeconvolutionLayer<TypeParam>(layer_param));
+  shared_ptr<Layer<TypeParam, TypeParam, TypeParam> > layer(
+      new LibDNNDeconvolutionLayer<TypeParam, TypeParam, TypeParam>(layer_param));
   layer->SetUp(this->blob_bottom_vec_, this->blob_top_vec_);
   // constant-fill the bottom blobs
   FillerParameter filler_param;
@@ -150,7 +150,7 @@ TYPED_TEST(LibDNNDeconvolutionLayerTest, TestGradient) {
   convolution_param->set_num_output(1);
   convolution_param->mutable_weight_filler()->set_type("gaussian");
   convolution_param->mutable_bias_filler()->set_type("gaussian");
-  LibDNNDeconvolutionLayer<TypeParam> layer(layer_param);
+  LibDNNDeconvolutionLayer<TypeParam, TypeParam, TypeParam> layer(layer_param);
   GradientChecker<TypeParam> checker(1e-2, 1e-3);
   checker.CheckGradientExhaustive(&layer, this->blob_bottom_vec_,
       this->blob_top_vec_);
@@ -179,7 +179,7 @@ TYPED_TEST(LibDNNDeconvolutionLayerTest, TestGradient3D) {
   convolution_param->set_num_output(2);
   convolution_param->mutable_weight_filler()->set_type("gaussian");
   convolution_param->mutable_bias_filler()->set_type("gaussian");
-  LibDNNDeconvolutionLayer<TypeParam> layer(layer_param);
+  LibDNNDeconvolutionLayer<TypeParam, TypeParam, TypeParam> layer(layer_param);
   GradientChecker<TypeParam> checker(1e-2, 1e-3);
   checker.CheckGradientExhaustive(&layer, this->blob_bottom_vec_,
       this->blob_top_vec_);
@@ -236,7 +236,7 @@ class LibDNNComparativeDeconvTest : public GPUDeviceTest<TypeParam> {
     int dims = dimsRand(this->rng_);
 
     std::uniform_int_distribution<int_tp> sizeRand(5,
-                std::max(static_cast<int>(pow(element_limit /
+                std::max(static_cast<int>(pow(ELEMENT_LIMIT /
                   (fmaps_in * fmaps_out * batchsize),
                   1.0 / (static_cast<double>(dims)))), 5));
 
@@ -329,14 +329,14 @@ class LibDNNComparativeDeconvTest : public GPUDeviceTest<TypeParam> {
       convolution_param->set_bias_term(true);
     }
 
-    LibDNNDeconvolutionLayer<TypeParam> layer(layer_param);
+    LibDNNDeconvolutionLayer<TypeParam, TypeParam, TypeParam> layer(layer_param);
     layer.SetUp(this->blob_bottom_vec_, this->blob_top_vec_);
 
-    DeconvolutionLayer<TypeParam> ref_layer(layer_param);
+    DeconvolutionLayer<TypeParam, TypeParam, TypeParam> ref_layer(layer_param);
     ref_layer.SetUp(this->blob_bottom_vec_ref_, this->blob_top_vec_ref_);
 
     for (int_tp i = 0; i < layer.blobs().size(); ++i) {
-      caffe_cpu_copy(layer.blobs()[i]->count(),
+      caffe_copy(layer.blobs()[i]->count(),
                      layer.blobs()[i]->cpu_data(),
                      ref_layer.blobs()[i]->mutable_cpu_data());
     }
@@ -344,7 +344,7 @@ class LibDNNComparativeDeconvTest : public GPUDeviceTest<TypeParam> {
     caffe_rng_uniform(blob_bottom_->count(), (TypeParam)-5.0, (TypeParam)5.0,
                       blob_bottom_->mutable_cpu_data());
 
-    caffe_cpu_copy(blob_bottom_->count(), blob_bottom_->cpu_data(),
+    caffe_copy(blob_bottom_->count(), blob_bottom_->cpu_data(),
                    blob_bottom_ref_->mutable_cpu_data());
 
     caffe_set(blob_top_->count(),
@@ -424,7 +424,7 @@ class LibDNNComparativeDeconvTest : public GPUDeviceTest<TypeParam> {
     int dims = dimsRand(this->rng_);
 
     std::uniform_int_distribution<int_tp> sizeRand(5,
-                std::max(static_cast<int>(pow(element_limit /
+                std::max(static_cast<int>(pow(ELEMENT_LIMIT /
                   (fmaps_in * fmaps_out * batchsize),
                   1.0 / (static_cast<double>(dims)))), 5));
 
@@ -516,14 +516,14 @@ class LibDNNComparativeDeconvTest : public GPUDeviceTest<TypeParam> {
       convolution_param->set_bias_term(true);
     }
 
-    LibDNNDeconvolutionLayer<TypeParam> layer(layer_param);
+    LibDNNDeconvolutionLayer<TypeParam, TypeParam, TypeParam> layer(layer_param);
     layer.SetUp(this->blob_bottom_vec_, this->blob_top_vec_);
 
-    DeconvolutionLayer<TypeParam> ref_layer(layer_param);
+    DeconvolutionLayer<TypeParam, TypeParam, TypeParam> ref_layer(layer_param);
     ref_layer.SetUp(this->blob_bottom_vec_ref_, this->blob_top_vec_ref_);
 
     for (int_tp i = 0; i < layer.blobs().size(); ++i) {
-      caffe_cpu_copy(layer.blobs()[i]->count(),
+      caffe_copy(layer.blobs()[i]->count(),
                      layer.blobs()[i]->cpu_data(),
                      ref_layer.blobs()[i]->mutable_cpu_data());
     }
@@ -531,13 +531,13 @@ class LibDNNComparativeDeconvTest : public GPUDeviceTest<TypeParam> {
     caffe_rng_uniform(blob_top_->count(), (TypeParam)-5.0, (TypeParam)5.0,
                       blob_top_->mutable_cpu_diff());
 
-    caffe_cpu_copy(blob_top_->count(), blob_top_->cpu_diff(),
+    caffe_copy(blob_top_->count(), blob_top_->cpu_diff(),
                    blob_top_ref_->mutable_cpu_diff());
 
     caffe_rng_uniform(blob_bottom_->count(), (TypeParam)-5.0, (TypeParam)5.0,
                       blob_bottom_->mutable_cpu_data());
 
-    caffe_cpu_copy(blob_bottom_->count(), blob_bottom_->cpu_data(),
+    caffe_copy(blob_bottom_->count(), blob_bottom_->cpu_data(),
                    blob_bottom_ref_->mutable_cpu_data());
 
 
@@ -555,7 +555,7 @@ class LibDNNComparativeDeconvTest : public GPUDeviceTest<TypeParam> {
     layer.Forward(this->blob_bottom_vec_, this->blob_top_vec_);
     ref_layer.Forward(this->blob_bottom_vec_ref_, this->blob_top_vec_ref_);
 
-    std::vector<bool> prop_down(1, true);
+    vector<bool> prop_down(1, true);
 
     layer.Backward(blob_top_vec_, prop_down, blob_bottom_vec_);
     ref_layer.Backward(blob_top_vec_ref_, prop_down, blob_bottom_vec_ref_);
@@ -661,7 +661,7 @@ class LibDNNComparativeDeconvTest : public GPUDeviceTest<TypeParam> {
   std::mt19937 rng_;
 };
 
-TYPED_TEST_CASE(LibDNNComparativeDeconvTest, TestDtypes);
+TYPED_TEST_CASE(LibDNNComparativeDeconvTest, TestDtypesFloat);
 
 TYPED_TEST(LibDNNComparativeDeconvTest, TestForward) {
   for (int i = 0; i < 100; ++i) {

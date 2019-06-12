@@ -2,7 +2,6 @@
 Wrap the internal caffe C++ module (_caffe.so) with a clean, Pythonic
 interface.
 """
-
 from collections import OrderedDict
 try:
     from itertools import izip_longest
@@ -10,9 +9,8 @@ except:
     from itertools import zip_longest as izip_longest
 import numpy as np
 
-from ._caffe import \
-    SolverParameter, NetParameter, NetState, Net, SGDSolver, NesterovSolver, AdaGradSolver, \
-    RMSPropSolver, AdaDeltaSolver, AdamSolver, NCCL, Timer
+from ._caffe import data_type, NCCL, Timer, NetParameter, NetState, Net, \
+                    SolverParameter
     
 import caffe.io
 
@@ -34,6 +32,36 @@ def _Net_blobs(self):
     return self._blobs_dict
 
 @property
+def _Net_layer_bottom_blobs(self):
+    """
+    An OrderedDict of network layer bottom blobs indexed by layer name
+    """
+    if not hasattr(self, '_layer_bottom_blobs_dict'):
+        layer_names = []
+        blobs = []
+        for layer in self.layers:
+            layer_blobs = [self.blobs[blob_name] for blob_name in layer.layer_param.bottom]
+            blobs.append(layer_blobs)
+            layer_names.append(layer.layer_param.name)
+        self._layer_bottom_blobs_dict = OrderedDict(zip(layer_names, blobs))
+    return self._layer_bottom_blobs_dict
+
+@property
+def _Net_layer_top_blobs(self):
+    """
+    An OrderedDict of network layer bottom blobs indexed by layer name
+    """
+    if not hasattr(self, '_layer_top_blobs_dict'):
+        layer_names = []
+        blobs = []
+        for layer in self.layers:
+            layer_blobs = [self.blobs[blob_name] for blob_name in layer.layer_param.top]
+            blobs.append(layer_blobs)
+            layer_names.append(layer.layer_param.name)
+        self._layer_top_blobs_dict = OrderedDict(zip(layer_names, blobs))
+    return self._layer_top_blobs_dict
+
+@property
 def _Net_blob_loss_weights(self):
     """
     An OrderedDict (bottom to top, i.e., input to output) of network
@@ -53,7 +81,6 @@ def _Net_layer_dict(self):
     if not hasattr(self, '_layer_dict'):
         self._layer_dict = OrderedDict(zip(self._layer_names, self.layers))
     return self._layer_dict
-
 
 @property
 def _Net_params(self):
@@ -122,7 +149,7 @@ def _Net_forward(self, blobs=None, start=None, end=None, **kwargs):
 
     if end is not None:
         end_ind = list(self._layer_names).index(end)
-        outputs = set([end] + blobs)
+        outputs = set(self.top_names[end] + blobs)
     else:
         end_ind = len(self.layers) - 1
         outputs = set(self.outputs + blobs)
@@ -170,7 +197,7 @@ def _Net_backward(self, diffs=None, start=None, end=None, **kwargs):
 
     if end is not None:
         end_ind = list(self._layer_names).index(end)
-        outputs = set([end] + diffs)
+        outputs = set(self.bottom_names[end] + diffs)
     else:
         end_ind = 0
         outputs = set(self.inputs + diffs)
@@ -347,8 +374,9 @@ def _Net_get_id_name(func, field):
     return get_id_name
 
 # Attach methods to Net.
-Net.layers_dict = _Net_layers_dict
 Net.blobs = _Net_blobs
+Net.layer_bottom_blobs = _Net_layer_bottom_blobs
+Net.layer_top_blobs = _Net_layer_top_blobs
 Net.blob_loss_weights = _Net_blob_loss_weights
 Net.layer_dict = _Net_layer_dict
 Net.params = _Net_params

@@ -84,6 +84,15 @@ models/*
 # build, distribute, and bins (+ python proto bindings)
 cmake_build
 build
+build_opencl
+build_cuda
+build_arm
+build_64
+.build_opencl
+.build_cuda
+.build_arm
+.build_64
+.build
 .build_debug/*
 .build_release/*
 distribute/*
@@ -94,6 +103,7 @@ cmake_build
 .cmake_build
 *.gen.cmake
 .libdnn_debug
+.caffe_debug
 
 # Generated documentation
 docs/_site
@@ -111,10 +121,15 @@ LOG*
 CURRENT
 MANIFEST-*
 
-#Visual Studio files
+# Visual Studio files
 *.user
 *.suo
 *.sdf
 *.opensdf
 *.pdb
 *.props
+
+# Log files
+log*.txt
+error*.txt
+*.ffs_db

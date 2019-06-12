@@ -3,112 +3,147 @@
 #include "caffe/layers/tile_layer.hpp"
 #include "caffe/util/math_functions.hpp"
 
-#ifdef USE_GREENTEA
-#include "caffe/greentea/greentea.hpp"
-#include "caffe/greentea/greentea_math_functions.hpp"
-#endif
-
 
 namespace caffe {
 
-#ifdef USE_CUDA
-template<typename Dtype>
-__global__ void Tile(const int_tp nthreads, const Dtype* bottom_data,
-                     const int_tp tile_size, const int_tp num_tiles,
-                     const int_tp bottom_tile_axis, Dtype* top_data) {
-  CUDA_KERNEL_LOOP(index, nthreads) {
-    const int_tp d = index % tile_size;
-    const int_tp b = (index / tile_size / num_tiles) % bottom_tile_axis;
-    const int_tp n = index / tile_size / num_tiles / bottom_tile_axis;
-    const int_tp bottom_index = (n * bottom_tile_axis + b) * tile_size + d;
-    top_data[index] = bottom_data[bottom_index];
-  }
-}
-#endif  // USE_CUDA
+template<typename Dtype, typename MItype, typename MOtype>
+void TileLayer<Dtype, MItype, MOtype>::GenerateProgram() {
+  this->device_program_ = this->device_->CreateProgram();
+  stringstream ss;
 
-template <typename Dtype>
-void TileLayer<Dtype>::Forward_gpu(
-    const vector<Blob<Dtype>*>& bottom, const vector<Blob<Dtype>*>& top) {
-  const Dtype* bottom_data = bottom[0]->gpu_data();
-  Dtype* top_data = top[0]->mutable_gpu_data();
+  ss << this->device_program_->setup();
+  ss << this->device_program_->template define_type<Dtype>("Dtype");
+  ss << this->device_program_->template define_type<MItype>("MItype");
+  ss << this->device_program_->template define_type<MOtype>("MOtype");
+
+  KernelArgs fw_args;
+  fw_args.push_back(this->device_program_->template create_kernel_arg<uint_tp>(
+                    "nthreads", KERNEL_ARG_CONST));
+  fw_args.push_back(this->device_program_->template create_kernel_arg<Dtype>(
+                    "bottom_data", KERNEL_ARG_CONST | KERNEL_ARG_GLOBAL_MEM));
+  fw_args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                    "tile_size", KERNEL_ARG_CONST));
+  fw_args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                    "num_tiles", KERNEL_ARG_CONST));
+  fw_args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                    "bottom_tile_axis", KERNEL_ARG_CONST));
+  fw_args.push_back(this->device_program_->template create_kernel_arg<Dtype>(
+                    "top_data", KERNEL_ARG_GLOBAL_MEM));
+  ss << this->device_program_->function("TileForward", fw_args);
+  ss << this->device_program_->kernel_loop("uint_tp", "index", "nthreads");
+  ss << "const int_tp d = index % tile_size;" << std::endl;
+  ss << "const int_tp b = (index / tile_size / num_tiles) % bottom_tile_axis;"
+     << std::endl;
+  ss << "const int_tp n = index / tile_size / num_tiles / bottom_tile_axis;"
+     << std::endl;
+  ss << "const int_tp bottom_index = (n * bottom_tile_axis + b)"
+     << " * tile_size + d;" << std::endl;
+  ss << "top_data[index] = bottom_data[bottom_index];" << std::endl;
+  ss << "}" << std::endl;
+  ss << "}" << std::endl;
+
+  KernelArgs bw_args;
+  bw_args.push_back(this->device_program_->template create_kernel_arg<uint_tp>(
+                    "nthreads", KERNEL_ARG_CONST));
+  bw_args.push_back(this->device_program_->template create_kernel_arg<Dtype>(
+                    "top_diff", KERNEL_ARG_CONST | KERNEL_ARG_GLOBAL_MEM));
+  bw_args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                    "tile_size", KERNEL_ARG_CONST));
+  bw_args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                    "num_tiles", KERNEL_ARG_CONST));
+  bw_args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                    "bottom_tile_axis", KERNEL_ARG_GLOBAL_MEM));
+  ss << this->device_program_->function("TileBackward", bw_args);
+  ss << this->device_program_->kernel_loop("uint_tp", "index", "nthreads");
+  ss << "const int_tp d = index % tile_size;" << std::endl;
+  ss << "const int_tp b = (index / tile_size) % bottom_tile_axis;" << std::endl;
+  ss << "const int_tp n = index / tile_size / bottom_tile_axis;" << std::endl;
+  ss << "bottom_diff[index] = 0;" << std::endl;
+  ss << "int_tp top_index = (n * num_tiles * bottom_tile_axis + b)"
+     << " * tile_size + d;" << std::endl;
+  ss << "for (int_tp t = 0; t < num_tiles; ++t) {" << std::endl;
+  ss << "bottom_diff[index] += top_diff[top_index];" << std::endl;
+  ss << "top_index += bottom_tile_axis * tile_size;" << std::endl;
+  ss << "}" << std::endl;
+  ss << "}" << std::endl;
+  ss << "}" << std::endl;
+
+  this->device_program_->set_source(ss.str());
+  this->device_program_->Compile(true, true);
+}
+
+
+template<typename Dtype, typename MItype, typename MOtype>
+void TileLayer<Dtype, MItype, MOtype>::Forward_gpu(
+    const vector<Blob<MItype>*>& bottom,
+    const vector<Blob<MOtype>*>& top) {
+  vptr<const Dtype> bottom_data = bottom[0]->gpu_data();
+  vptr<Dtype> top_data = top[0]->mutable_gpu_data();
   const int_tp bottom_tile_axis = bottom[0]->shape(axis_);
   const int_tp nthreads = top[0]->count();
-  if (this->get_device()->backend() == BACKEND_CUDA) {
-#ifdef USE_CUDA
-    Tile<Dtype>  // NOLINT_NEXT_LINE(whitespace/operators)
-    CUDA_KERNEL(CAFFE_GET_BLOCKS(nthreads), CAFFE_CUDA_NUM_THREADS)(
-        nthreads, bottom_data, inner_dim_, tiles_, bottom_tile_axis, top_data);
-#endif  // USE_CUDA
-  } else {
-#ifdef USE_GREENTEA
-    viennacl::ocl::context &ctx = viennacl::ocl::get_context(
-        this->device_->id());
-    viennacl::ocl::program &program = this->device_->program();
 
-    viennacl::ocl::kernel &oclk_tile = program.get_kernel(
-        CL_KERNEL_SELECT("tile"));
-    viennacl::ocl::enqueue(
-        oclk_tile(nthreads, WrapHandle((cl_mem) bottom_data, &ctx), inner_dim_,
-                  tiles_, bottom_tile_axis,
-                  WrapHandle((cl_mem) top_data, &ctx)),
-        ctx.get_queue());
-#endif  // USE_GREENTEA
-  }
+  shared_ptr<DeviceKernel> kernel =
+                                this->device_program_->GetKernel("TileForward");
+  kernel->add_arg(&nthreads);
+  kernel->add_arg(&bottom_data);
+  kernel->add_arg(&inner_dim_);
+  kernel->add_arg(&tiles_);
+  kernel->add_arg(&bottom_tile_axis);
+  kernel->add_arg(&top_data);
+
+  vector<size_t> work_size(1, nthreads);
+  vector<size_t> group;
+  vector<size_t> local;
+  this->device_->get_threads(&work_size, &group, &local, kernel.get(), true);
+  kernel->Execute(group, local);
 }
 
-#ifdef USE_CUDA
-template <typename Dtype>
-__global__ void TileBackward(const int_tp nthreads, const Dtype* top_diff,
-                             const int_tp tile_size, const int_tp num_tiles,
-                             const int_tp bottom_tile_axis,
-    Dtype* bottom_diff) {
-  CUDA_KERNEL_LOOP(index, nthreads) {
-    const int_tp d = index % tile_size;
-    const int_tp b = (index / tile_size) % bottom_tile_axis;
-    const int_tp n = index / tile_size / bottom_tile_axis;
-    bottom_diff[index] = 0;
-    int_tp top_index = (n * num_tiles * bottom_tile_axis + b) * tile_size + d;
-    for (int_tp t = 0; t < num_tiles; ++t) {
-      bottom_diff[index] += top_diff[top_index];
-      top_index += bottom_tile_axis * tile_size;
-    }
-  }
-}
-#endif  // USE_CUDA
-
-template <typename Dtype>
-void TileLayer<Dtype>::Backward_gpu(const vector<Blob<Dtype>*>& top,
-    const vector<bool>& propagate_down, const vector<Blob<Dtype>*>& bottom) {
+template<typename Dtype, typename MItype, typename MOtype>
+void TileLayer<Dtype, MItype, MOtype>::Backward_gpu(
+    const vector<Blob<MOtype>*>& top, const vector<bool>& propagate_down,
+    const vector<Blob<MItype>*>& bottom) {
   if (!propagate_down[0]) { return; }
-  const Dtype* top_diff = top[0]->gpu_diff();
-  Dtype* bottom_diff = bottom[0]->mutable_gpu_diff();
+  vptr<const Dtype> top_diff = top[0]->gpu_diff();
+  vptr<Dtype> bottom_diff = bottom[0]->mutable_gpu_diff();
   const int_tp bottom_tile_axis = bottom[0]->shape(axis_);
   const int_tp tile_size = inner_dim_ / bottom_tile_axis;
   const int_tp nthreads = bottom[0]->count();
 
-  if (this->get_device()->backend() == BACKEND_CUDA) {
-#ifdef USE_CUDA
-    TileBackward<Dtype>  // NOLINT_NEXT_LINE(whitespace/operators)
-    CUDA_KERNEL(CAFFE_GET_BLOCKS(nthreads), CAFFE_CUDA_NUM_THREADS)(
-        nthreads, top_diff, tile_size, tiles_, bottom_tile_axis, bottom_diff);
-#endif  // USE_CUDA
-  } else {
-#ifdef USE_GREENTEA
-    viennacl::ocl::context &ctx = viennacl::ocl::get_context(
-        this->device_->id());
-    viennacl::ocl::program &program = this->device_->program();
+  shared_ptr<DeviceKernel> kernel =
+                                this->device_program_->GetKernel("TileBackward");
+  kernel->add_arg(&nthreads);
+  kernel->add_arg(&top_diff);
+  kernel->add_arg(&tile_size);
+  kernel->add_arg(&tiles_);
+  kernel->add_arg(&bottom_tile_axis);
+  kernel->add_arg(&bottom_diff);
 
-    viennacl::ocl::kernel &oclk_tile = program.get_kernel(
-        CL_KERNEL_SELECT("tile_backward"));
-    viennacl::ocl::enqueue(
-        oclk_tile(nthreads, WrapHandle((cl_mem) top_diff, &ctx), tile_size,
-                  tiles_, bottom_tile_axis,
-                  WrapHandle((cl_mem) bottom_diff, &ctx)),
-        ctx.get_queue());
-#endif  // USE_GREENTEA
-  }
+  vector<size_t> work_size(1, nthreads);
+  vector<size_t> group;
+  vector<size_t> local;
+  this->device_->get_threads(&work_size, &group, &local, kernel.get(), true);
+  kernel->Execute(group, local);
 }
 
-INSTANTIATE_LAYER_GPU_FUNCS(TileLayer);
+INSTANTIATE_CLASST_FUNC_3T_GUARDED(TileLayer, GenerateProgram,
+                                  (half_fp), (half_fp), (half_fp));
+INSTANTIATE_CLASST_FUNC_3T_GUARDED(TileLayer, GenerateProgram,
+                                  (float), (float), (float));
+INSTANTIATE_CLASST_FUNC_3T_GUARDED(TileLayer, GenerateProgram,
+                                  (double), (double), (double));
+
+INSTANTIATE_CLASST_FUNC_3T_GUARDED(TileLayer, Forward_gpu,
+                                  (half_fp), (half_fp), (half_fp));
+INSTANTIATE_CLASST_FUNC_3T_GUARDED(TileLayer, Forward_gpu,
+                                  (float), (float), (float));
+INSTANTIATE_CLASST_FUNC_3T_GUARDED(TileLayer, Forward_gpu,
+                                  (double), (double), (double));
+
+INSTANTIATE_CLASST_FUNC_3T_GUARDED(TileLayer, Backward_gpu,
+                                  (half_fp), (half_fp), (half_fp));
+INSTANTIATE_CLASST_FUNC_3T_GUARDED(TileLayer, Backward_gpu,
+                                  (float), (float), (float));
+INSTANTIATE_CLASST_FUNC_3T_GUARDED(TileLayer, Backward_gpu,
+                                  (double), (double), (double));
 
 }  // namespace caffe

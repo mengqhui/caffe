@@ -2,7 +2,7 @@
 #include <algorithm>
 #include <vector>
 #include "caffe/common.hpp"
-#if defined(USE_GREENTEA) && defined(USE_FFT)
+#if defined(USE_OPENCL) && defined(USE_FFT)
 #include "caffe/filler.hpp"
 #include "caffe/layer.hpp"
 #include "caffe/util/fft.hpp"
@@ -30,7 +30,7 @@
 
 namespace caffe {
 
-template <typename Dtype>
+template<typename Dtype, typename MItype, typename MOtype>
 void ConvolutionLayerFFT<Dtype>::fft_gpu_setup() {
   if (fft_gpu_initialized_) {
     return;
@@ -111,7 +111,7 @@ void ConvolutionLayerFFT<Dtype>::fft_gpu_setup() {
   fft_gpu_initialized_ = true;
 }
 
-template <typename Dtype>
+template<typename Dtype, typename MItype, typename MOtype>
 void ConvolutionLayerFFT<Dtype>::fft_gpu_clean() {
   if (fft_gpu_initialized_) {
     clReleaseMemObject((cl_mem)fft_gpu_weights_complex_);
@@ -128,7 +128,7 @@ void ConvolutionLayerFFT<Dtype>::fft_gpu_clean() {
   fft_gpu_initialized_ = false;
 }
 
-template <typename Dtype>
+template<typename Dtype, typename MItype, typename MOtype>
 void ConvolutionLayerFFT<Dtype>::fft_gpu_compute_weights() {
   int num_weights = this->num_output_ * (this->channels_ / this->group_);
   int size = num_weights * fft_map_complex_size_ * sizeof(DtypeComplex<Dtype>);
@@ -155,7 +155,7 @@ void ConvolutionLayerFFT<Dtype>::fft_gpu_compute_weights() {
 #endif
 }
 
-template <typename Dtype>
+template<typename Dtype, typename MItype, typename MOtype>
 void ConvolutionLayerFFT<Dtype>::Forward_gpu_fft_task(const Dtype* bottom_data,
          int bottom_data_offset, Dtype* top_data, int top_data_offset, int n,
          int ch_gr, int out_gr) {
@@ -289,10 +289,10 @@ void ConvolutionLayerFFT<Dtype>::Forward_gpu_fft_task(const Dtype* bottom_data,
   }
 }
 
-template <typename Dtype>
+template<typename Dtype, typename MItype, typename MOtype>
 void ConvolutionLayerFFT<Dtype>::Forward_gpu_fft(
-         const vector<Blob<Dtype>*>& bottom,
-         const vector<Blob<Dtype>*>& top) {
+         const vector<Blob<MItype>*>& bottom,
+         const vector<Blob<MOtype>*>& top) {
   fft_gpu_compute_weights();
 
   int ch_gr = this->channels_ / this->group_;
@@ -309,16 +309,16 @@ void ConvolutionLayerFFT<Dtype>::Forward_gpu_fft(
   }
 }
 
-template <typename Dtype>
-void ConvolutionLayerFFT<Dtype>::Forward_gpu(const vector<Blob<Dtype>*>& bottom,
-                                             const vector<Blob<Dtype>*>& top) {
+template<typename Dtype, typename MItype, typename MOtype>
+void ConvolutionLayerFFT<Dtype>::Forward_gpu(const vector<Blob<MItype>*>& bottom,
+                                             const vector<Blob<MOtype>*>& top) {
     Forward_gpu_fft(bottom, top);
 }
 
-template <typename Dtype>
+template<typename Dtype, typename MItype, typename MOtype>
 void ConvolutionLayerFFT<Dtype>::Backward_gpu_fft_task(
-         const vector<Blob<Dtype>*>& bottom,
-         const vector<Blob<Dtype>*>& top,
+         const vector<Blob<MItype>*>& bottom,
+         const vector<Blob<MOtype>*>& top,
          const Dtype* weight, int i, int n,
          int ch_gr, int out_gr) {
   const Dtype* top_diff = top[i]->gpu_diff();
@@ -402,11 +402,11 @@ void ConvolutionLayerFFT<Dtype>::Backward_gpu_fft_task(
       kernel_center_h_, kernel_center_w_, 1, 1, this->pad_h_, this->pad_w_);
 }
 
-template <typename Dtype>
+template<typename Dtype, typename MItype, typename MOtype>
 void ConvolutionLayerFFT<Dtype>::Backward_gpu(
-         const vector<Blob<Dtype>*>& top,
+         const vector<Blob<MOtype>*>& top,
          const vector<bool>& propagate_down,
-         const vector<Blob<Dtype>*>& bottom) {
+         const vector<Blob<MItype>*>& bottom) {
   const Dtype* weight = this->blobs_[0]->gpu_data();
   Dtype* weight_diff = this->blobs_[0]->mutable_gpu_diff();
 
@@ -519,8 +519,8 @@ void ConvolutionLayerFFT<double>::Backward_gpu(
   NOT_IMPLEMENTED;
 }
 
-INSTANTIATE_LAYER_GPU_FUNCS(ConvolutionLayerFFT);
+INSTANTIATE_CLASST_FUNC_3T_GUARDED(ConvolutionLayerFFT);
 
 }  // namespace caffe
-#endif  // USE_GREENTEA && USE_FFT
+#endif  // USE_OPENCL && USE_FFT
 #endif  // !CPU_ONLY

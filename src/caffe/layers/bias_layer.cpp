@@ -6,9 +6,9 @@
 
 namespace caffe {
 
-template <typename Dtype>
-void BiasLayer<Dtype>::LayerSetUp(const vector<Blob<Dtype>*>& bottom,
-      const vector<Blob<Dtype>*>& top) {
+template<typename Dtype, typename MItype, typename MOtype>
+void BiasLayer<Dtype, MItype, MOtype>::LayerSetUp(const vector<Blob<MItype>*>& bottom,
+      const vector<Blob<MOtype>*>& top) {
   if (bottom.size() == 1 && this->blobs_.size() > 0) {
     LOG(INFO) << "Skipping parameter initialization";
   } else if (bottom.size() == 1) {
@@ -34,11 +34,14 @@ void BiasLayer<Dtype>::LayerSetUp(const vector<Blob<Dtype>*>& bottom,
     filler->Fill(this->blobs_[0].get());
   }
   this->param_propagate_down_.resize(this->blobs_.size(), true);
+
+  this->InitializeQuantizers(bottom, top);
 }
 
-template <typename Dtype>
-void BiasLayer<Dtype>::Reshape(const vector<Blob<Dtype>*>& bottom,
-      const vector<Blob<Dtype>*>& top) {
+template<typename Dtype, typename MItype, typename MOtype>
+void BiasLayer<Dtype, MItype, MOtype>::Reshape(
+    const vector<Blob<MItype>*>& bottom,
+    const vector<Blob<MOtype>*>& top) {
   const BiasParameter& param = this->layer_param_.bias_param();
   Blob<Dtype>* bias = (bottom.size() > 1) ? bottom[1] : this->blobs_[0].get();
   // Always set axis == 0 in special case where bias is a scalar
@@ -66,11 +69,15 @@ void BiasLayer<Dtype>::Reshape(const vector<Blob<Dtype>*>& bottom,
   if (bias_multiplier_.cpu_data()[inner_dim_ - 1] != Dtype(1)) {
     caffe_set(inner_dim_, Dtype(1), bias_multiplier_.mutable_cpu_data());
   }
+
+  if (Caffe::mode() == Caffe::GPU && this->device_program_.get() == nullptr) {
+    this->GenerateProgram();
+  }
 }
 
-template <typename Dtype>
-void BiasLayer<Dtype>::Forward_cpu(const vector<Blob<Dtype>*>& bottom,
-      const vector<Blob<Dtype>*>& top) {
+template<typename Dtype, typename MItype, typename MOtype>
+void BiasLayer<Dtype, MItype, MOtype>::Forward_cpu(const vector<Blob<MItype>*>& bottom,
+      const vector<Blob<MOtype>*>& top) {
   const Dtype* bias_data =
       ((bottom.size() > 1) ? bottom[1] : this->blobs_[0].get())->cpu_data();
   Dtype* top_data = top[0]->mutable_cpu_data();
@@ -79,16 +86,16 @@ void BiasLayer<Dtype>::Forward_cpu(const vector<Blob<Dtype>*>& bottom,
     caffe_copy(bottom[0]->count(), bottom_data, top_data);
   }
   for (int_tp n = 0; n < outer_dim_; ++n) {
-    caffe_cpu_gemm(CblasNoTrans, CblasNoTrans, bias_dim_,
+    caffe_gemm(CblasNoTrans, CblasNoTrans, bias_dim_,
         inner_dim_, 1, Dtype(1), bias_data,
         bias_multiplier_.cpu_data(), Dtype(1), top_data);
     top_data += dim_;
   }
 }
 
-template <typename Dtype>
-void BiasLayer<Dtype>::Backward_cpu(const vector<Blob<Dtype>*>& top,
-      const vector<bool>& propagate_down, const vector<Blob<Dtype>*>& bottom) {
+template<typename Dtype, typename MItype, typename MOtype>
+void BiasLayer<Dtype, MItype, MOtype>::Backward_cpu(const vector<Blob<MOtype>*>& top,
+      const vector<bool>& propagate_down, const vector<Blob<MItype>*>& bottom) {
   if (propagate_down[0] && bottom[0] != top[0]) {
     const Dtype* top_diff = top[0]->cpu_diff();
     Dtype* bottom_diff = bottom[0]->mutable_cpu_diff();
@@ -103,7 +110,7 @@ void BiasLayer<Dtype>::Backward_cpu(const vector<Blob<Dtype>*>& top,
         ->mutable_cpu_diff();
     bool accum = bias_param;
     for (int_tp n = 0; n < outer_dim_; ++n) {
-      caffe_cpu_gemv(CblasNoTrans, bias_dim_, inner_dim_, Dtype(1),
+      caffe_gemv(CblasNoTrans, bias_dim_, inner_dim_, Dtype(1),
           top_diff, bias_multiplier_.cpu_data(), Dtype(accum), bias_diff);
       top_diff += dim_;
       accum = true;
@@ -115,7 +122,13 @@ void BiasLayer<Dtype>::Backward_cpu(const vector<Blob<Dtype>*>& top,
 STUB_GPU(BiasLayer);
 #endif
 
-INSTANTIATE_CLASS(BiasLayer);
+INSTANTIATE_CLASS_3T_GUARDED(BiasLayer, (half_fp), (half_fp), (half_fp));
+INSTANTIATE_CLASS_3T_GUARDED(BiasLayer, (float), (float), (float));
+INSTANTIATE_CLASS_3T_GUARDED(BiasLayer, (double), (double), (double));
+
 REGISTER_LAYER_CLASS(Bias);
+REGISTER_LAYER_CLASS_INST(Bias, (half_fp), (half_fp), (half_fp));
+REGISTER_LAYER_CLASS_INST(Bias, (float), (float), (float));
+REGISTER_LAYER_CLASS_INST(Bias, (double), (double), (double));
 
 }  // namespace caffe

@@ -9,12 +9,14 @@
 #include <cstdio>
 #include <cstdlib>
 
-#include "../device.hpp"
+#include "caffe/backend/device.hpp"
 #include "caffe/common.hpp"
 #include "caffe/util/io.hpp"
 
 using std::cout;
 using std::endl;
+using std::string;
+using std::vector;
 
 #ifdef CMAKE_BUILD
   #include "caffe_config.h"
@@ -22,14 +24,17 @@ using std::endl;
   #define TEST_DEVICE -1
   #define CMAKE_SOURCE_DIR "src/"
   #define EXAMPLES_SOURCE_DIR "examples/"
-  #define CMAKE_EXT ""
+  #define ABS_TEST_DATA_DIR "src/caffe/test/test_data"
 #endif
+
+// Macros for test instantiation
+#include "caffe/test_macros.hpp"
 
 int main(int argc, char** argv);
 
 namespace caffe {
 
-template <typename TypeParam>
+template<typename TypeParam>
 class MultiDeviceTest : public ::testing::Test {
  public:
   typedef typename TypeParam::Dtype Dtype;
@@ -41,47 +46,28 @@ class MultiDeviceTest : public ::testing::Test {
   virtual ~MultiDeviceTest() { RemoveCaffeTempDir(); }
 };
 
-typedef ::testing::Types<float, double> TestDtypes;
-
-template <typename TypeParam>
+template<typename TypeParam>
 struct CPUDevice {
   typedef TypeParam Dtype;
   static const Caffe::Brew device = Caffe::CPU;
 };
 
-template <typename Dtype>
+template<typename Dtype>
 class CPUDeviceTest : public MultiDeviceTest<CPUDevice<Dtype> > {
 };
 
-#ifdef CPU_ONLY
-
-typedef ::testing::Types<CPUDevice<float>,
-                         CPUDevice<double> > TestDtypesAndDevices;
-
-typedef ::testing::Types<CPUDevice<float> >
-                         TestFloatAndDevices;
-
-#else
-
-template <typename TypeParam>
+#ifndef CPU_ONLY
+template<typename TypeParam>
 struct GPUDevice {
   typedef TypeParam Dtype;
   static const Caffe::Brew device = Caffe::GPU;
 };
 
-template <typename Dtype>
+template<typename Dtype>
 class GPUDeviceTest : public MultiDeviceTest<GPUDevice<Dtype> > {
 };
+#endif  // CPU_ONLY
 
-typedef ::testing::Types<CPUDevice<float>, CPUDevice<double>,
-                         GPUDevice<float>, GPUDevice<double> >
-                         TestDtypesAndDevices;
-
-typedef ::testing::Types<CPUDevice<float>,
-                         GPUDevice<float> >
-                         TestFloatAndDevices;
-
-#endif
 
 #if defined(USE_LEVELDB) && defined(USE_LMDB)
 struct TypeLevelDB {
@@ -93,43 +79,65 @@ struct TypeLMDB {
 };
 #endif
 
-#ifdef USE_GREENTEA
 
-template <typename Dtype>
+template<typename Dtype>
 bool isSupported(void);
 
-template <>
-bool isSupported<double>(void);
+#ifdef USE_HALF
+template<> bool isSupported<half_fp>(void);
+template<> bool isSupported<CPUDevice<half_fp> >(void);
+template<> bool isSupported<GPUDevice<half_fp> >(void);
+#endif  // USE_HALF
 
-template <>
-bool isSupported<GPUDevice<double> >(void);
+#ifdef USE_SINGLE
+template<> bool isSupported<float>(void);
+template<> bool isSupported<CPUDevice<float> >(void);
+template<> bool isSupported<GPUDevice<float> >(void);
+#endif  // USE_SINGLE
 
-template <>
-bool isSupported<float>(void);
+#ifdef USE_DOUBLE
+template<> bool isSupported<double>(void);
+template<> bool isSupported<CPUDevice<double> >(void);
+template<> bool isSupported<GPUDevice<double> >(void);
+#endif  // USE_DOUBLE
 
-template <>
-bool isSupported<GPUDevice<float> >(void);
+#ifdef USE_INT_QUANT_8
+template<> bool isSupported<uint8_t>(void);
+template<> bool isSupported<CPUDevice<uint8_t> >(void);
+template<> bool isSupported<GPUDevice<uint8_t> >(void);
+#endif  // USE_INT_QUANT_8
 
-template <>
-bool isSupported<CPUDevice<float> >(void);
+#ifdef USE_INT_QUANT_16
+template<> bool isSupported<uint16_t>(void);
+template<> bool isSupported<CPUDevice<uint16_t> >(void);
+template<> bool isSupported<GPUDevice<uint16_t> >(void);
+#endif  // USE_INT_QUANT_16
 
-template <>
-bool isSupported<CPUDevice<double> >(void);
+#ifdef USE_INT_QUANT_32
+template<> bool isSupported<uint32_t>(void);
+template<> bool isSupported<CPUDevice<uint32_t> >(void);
+template<> bool isSupported<GPUDevice<uint32_t> >(void);
+#endif  // USE_INT_QUANT_32
 
-#if defined(USE_LEVELDB) && defined(USE_LMDB)
-template <>
-bool isSupported<TypeLevelDB>(void);
+#ifdef USE_INT_QUANT_64
+template<> bool isSupported<uint64_t>(void);
+template<> bool isSupported<CPUDevice<uint64_t> >(void);
+template<> bool isSupported<GPUDevice<uint64_t> >(void);
+#endif  // USE_INT_QUANT_64
 
-template <>
-bool isSupported<TypeLMDB>(void);
-#endif
+#if defined(USE_LEVELDB)
+template<> bool isSupported<TypeLevelDB>(void);
+#endif  // USE_LEVELDB
+
+#if defined(USE_LMDB)
+template<> bool isSupported<TypeLMDB>(void);
+#endif  // USE_LMDB
 
 #ifdef TYPED_TEST
 #undef TYPED_TEST
-#endif
-
-# define TYPED_TEST(CaseName, TestName) \
-  template <typename gtest_TypeParam_> \
+#endif  // TYPED_TEST
+#define TYPED_TEST(CaseName, TestName) \
+  template<typename gtest_TypeParam_> \
   class GTEST_TEST_CLASS_NAME_(CaseName, TestName) \
       : public CaseName<gtest_TypeParam_> { \
     private: \
@@ -145,18 +153,15 @@ bool isSupported<TypeLMDB>(void);
               GTEST_TEST_CLASS_NAME_(CaseName, TestName)>, \
           GTEST_TYPE_PARAMS_(CaseName)>::Register(\
               "", #CaseName, #TestName, 0); \
-  template <typename gtest_TypeParam_> \
+  template<typename gtest_TypeParam_> \
   void GTEST_TEST_CLASS_NAME_(CaseName, TestName)<gtest_TypeParam_>::TestBody()\
   {\
      if (isSupported<gtest_TypeParam_>())\
        TestBody_Impl();\
   }\
-  template <typename gtest_TypeParam_> \
+  template<typename gtest_TypeParam_> \
   void GTEST_TEST_CLASS_NAME_(CaseName, TestName) \
      <gtest_TypeParam_>::TestBody_Impl()
-#endif
-
 
 }  // namespace caffe
-
 #endif  // CAFFE_TEST_TEST_CAFFE_MAIN_HPP_

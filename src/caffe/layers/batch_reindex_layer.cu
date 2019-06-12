@@ -7,85 +7,111 @@
 
 namespace caffe {
 
-#ifdef USE_CUDA
-template<typename Dtype>
-__global__ void BRForward(const int_tp count, const int_tp inner_dim,
-                          const Dtype* in, const Dtype* permut, Dtype* out) {
-  CUDA_KERNEL_LOOP(index, count) {
-    int_tp n = index / (inner_dim);
-    int_tp in_n = static_cast<int_tp>(permut[n]);
-    out[index] = in[in_n * (inner_dim) + index % (inner_dim)];
-  }
-}
-#endif  // USE_CUDA
+template<typename Dtype, typename MItype, typename MOtype>
+void BatchReindexLayer<Dtype, MItype, MOtype>::GenerateProgram() {
+  this->device_program_ = this->device_->CreateProgram();
+  stringstream ss;
 
-template<typename Dtype>
-void BatchReindexLayer<Dtype>::Forward_gpu(const vector<Blob<Dtype>*>& bottom,
-                                           const vector<Blob<Dtype>*>& top) {
+  ss << this->device_program_->setup();
+  ss << this->device_program_->template define_type<Dtype>("Dtype");
+  ss << this->device_program_->template define_type<MItype>("MItype");
+  ss << this->device_program_->template define_type<MOtype>("MOtype");
+
+  KernelArgs fw_args;
+  fw_args.push_back(this->device_program_->template create_kernel_arg<uint_tp>(
+                    "count", KERNEL_ARG_CONST));
+  fw_args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                    "inner_dim", KERNEL_ARG_CONST));
+  fw_args.push_back(this->device_program_->template create_kernel_arg<MItype>(
+                    "in", KERNEL_ARG_CONST | KERNEL_ARG_GLOBAL_MEM));
+  fw_args.push_back(this->device_program_->template create_kernel_arg<MItype>(
+                    "permut", KERNEL_ARG_CONST | KERNEL_ARG_GLOBAL_MEM));
+  fw_args.push_back(this->device_program_->template create_kernel_arg<MOtype>(
+                    "out", KERNEL_ARG_GLOBAL_MEM));
+  ss << this->device_program_->function("BRForward", fw_args);
+  ss << this->device_program_->kernel_loop("uint_tp", "index", "count");
+  ss << "uint_tp n = index / (inner_dim);" << std::endl;
+  ss << "uint_tp in_n = (uint_tp)(permut[n]);" << std::endl;
+  ss << "out[index] = in[in_n * (inner_dim) + index % (inner_dim)];"
+     << std::endl;
+  ss << "}" << std::endl;
+  ss << "}" << std::endl;
+
+  KernelArgs bw_args;
+  bw_args.push_back(this->device_program_->template create_kernel_arg<uint_tp>(
+                    "count", KERNEL_ARG_CONST));
+  bw_args.push_back(this->device_program_->template create_kernel_arg<int_tp>(
+                    "inner_dim", KERNEL_ARG_CONST));
+  bw_args.push_back(this->device_program_->template create_kernel_arg<MOtype>(
+                    "in", KERNEL_ARG_CONST | KERNEL_ARG_GLOBAL_MEM));
+  bw_args.push_back(this->device_program_->template create_kernel_arg<Dtype>(
+                    "top_indexes", KERNEL_ARG_GLOBAL_MEM));
+  bw_args.push_back(this->device_program_->template create_kernel_arg<Dtype>(
+                    "begins", KERNEL_ARG_GLOBAL_MEM));
+  bw_args.push_back(this->device_program_->template create_kernel_arg<Dtype>(
+                    "counts", KERNEL_ARG_GLOBAL_MEM));
+  bw_args.push_back(this->device_program_->template create_kernel_arg<MItype>(
+                    "out", KERNEL_ARG_GLOBAL_MEM));
+  ss << this->device_program_->function("BRBackward", bw_args);
+  ss << this->device_program_->kernel_loop("uint_tp", "index", "count");
+  ss << "uint_tp n = index / (inner_dim);" << std::endl;
+  ss << "out[index] = 0;" << std::endl;
+  ss << "uint_tp lower = (uint_tp)(begins[n]);" << std::endl;
+  ss << "uint_tp upper = lower + (uint_tp)(counts[n]);" << std::endl;
+  ss << "for (uint_tp i = lower; i < upper; ++i) {" << std::endl;
+  ss << "uint_tp in_n = (uint_tp)(top_indexes[i]);" << std::endl;
+  ss << "out[index] += in[in_n * (inner_dim) + index % (inner_dim)];"
+     << std::endl;
+  ss << "}" << std::endl;
+  ss << "}" << std::endl;
+  ss << "}" << std::endl;
+
+  this->device_program_->set_source(ss.str());
+  this->device_program_->Compile(true, true);
+}
+
+template<typename Dtype, typename MItype, typename MOtype>
+void BatchReindexLayer<Dtype, MItype, MOtype>::Forward_gpu(
+                                           const vector<Blob<MItype>*>& bottom,
+                                           const vector<Blob<MOtype>*>& top) {
   check_batch_reindex(bottom[0]->shape(0), bottom[1]->count(),
                       bottom[1]->cpu_data());
   if (top[0]->count() == 0) {
     return;
   }
-  if (this->device_->backend() == BACKEND_CUDA) {
-    int_tp threads = top[0]->count();
-#ifdef USE_CUDA
-    // NOLINT_NEXT_LINE(whitespace/operators)
-    BRForward<Dtype> CUDA_KERNEL(CAFFE_GET_BLOCKS(threads),
-                                 CAFFE_CUDA_NUM_THREADS) (
-        top[0]->count(), bottom[0]->count() / bottom[0]->shape(0),
-        bottom[0]->gpu_data(), bottom[1]->gpu_data(),
-        top[0]->mutable_gpu_data());
-    CUDA_POST_KERNEL_CHECK;
-#endif  // USE_CUDA
-  } else {
-#ifdef USE_GREENTEA
-    viennacl::ocl::context &ctx = viennacl::ocl::get_context(
-        this->device_->id());
-    viennacl::ocl::program &program = this->device_->program();
+  const uint_tp count = top[0]->count();
+  const uint_tp inner_dim = bottom[0]->count() / bottom[0]->shape(0);
+  vptr<const MItype> bottom_data = bottom[0]->gpu_data();
+  vptr<const MItype> perm_data = bottom[1]->gpu_data();
+  vptr<MOtype> top_data = top[0]->mutable_gpu_data();
 
-    viennacl::ocl::kernel &oclk_br = program.get_kernel(
-        CL_KERNEL_SELECT("br_forward"));
-    viennacl::ocl::enqueue(
-        oclk_br(top[0]->count(), bottom[0]->count() / bottom[0]->shape(0),
-                WrapHandle((cl_mem) (bottom[0]->gpu_data()), &ctx),
-                WrapHandle((cl_mem) (bottom[1]->gpu_data()), &ctx),
-                WrapHandle((cl_mem) (top[0]->mutable_gpu_data()), &ctx)),
-        ctx.get_queue());
-#endif  // USE_GREENTEA
-  }
+  shared_ptr<DeviceKernel> kernel =
+                                  this->device_program_->GetKernel("BRForward");
+  kernel->add_arg(&count);
+  kernel->add_arg(&inner_dim);
+  kernel->add_arg(&bottom_data);
+  kernel->add_arg(&perm_data);
+  kernel->add_arg(&top_data);
+
+  vector<size_t> work_size(1, count);
+  vector<size_t> group;
+  vector<size_t> local;
+  this->device_->get_threads(&work_size, &group, &local, kernel.get(), true);
+  kernel->Execute(group, local);
 }
 
-#ifdef USE_CUDA
-template<typename Dtype>
-__global__ void BRBackward(const int_tp count, const int_tp inner_dim,
-                           const Dtype* in, const Dtype* top_indexes,
-                           const Dtype* begins, const Dtype* counts,
-                           Dtype* out) {
-  CUDA_KERNEL_LOOP(index, count) {
-    int_tp n = index / (inner_dim);
-    out[index] = 0;
-    int_tp lower = static_cast<int_tp>(begins[n]);
-    int_tp upper = lower + static_cast<int_tp>(counts[n]);
-    for (int_tp i = lower; i < upper; ++i) {
-      int_tp in_n = static_cast<int_tp>(top_indexes[i]);
-      out[index] += in[in_n * (inner_dim) + index % (inner_dim)];
-    }
-  }
-}
-#endif  // USE_CUDA
 
-template<typename Dtype>
-void BatchReindexLayer<Dtype>::Backward_gpu(
-    const vector<Blob<Dtype>*>& top, const vector<bool>& propagate_down,
-    const vector<Blob<Dtype>*>& bottom) {
+template<typename Dtype, typename MItype, typename MOtype>
+void BatchReindexLayer<Dtype, MItype, MOtype>::Backward_gpu(
+    const vector<Blob<MOtype>*>& top, const vector<bool>& propagate_down,
+    const vector<Blob<MItype>*>& bottom) {
   CHECK(!propagate_down[1]) << "Cannot backprop to index.";
   if (!propagate_down[0]) {
     return;
   }
 
   vector<std::pair<int_tp, int_tp> > mapping;
-  const Dtype* perm = bottom[1]->cpu_data();
+  const MItype* perm = bottom[1]->cpu_data();
   for (int_tp i = 0; i < bottom[1]->count(); ++i) {
     mapping.push_back(pair<int_tp, int_tp>(static_cast<int_tp>(perm[i]), i));
   }
@@ -117,37 +143,49 @@ void BatchReindexLayer<Dtype>::Backward_gpu(
     c_data[mapping[i].first] += 1;
   }
 
-  if (this->device_->backend() == BACKEND_CUDA) {
-#ifdef USE_CUDA
-    int_tp threads = bottom[0]->count();
-    // NOLINT_NEXT_LINE(whitespace/operators)
-    BRBackward<Dtype> CUDA_KERNEL(CAFFE_GET_BLOCKS(threads),
-                                  CAFFE_CUDA_NUM_THREADS) (
-        bottom[0]->count(), bottom[0]->count() / bottom[0]->shape(0),
-        top[0]->gpu_diff(), top_indexes.gpu_data(), begins.gpu_data(),
-        counts.gpu_data(), bottom[0]->mutable_gpu_diff());
-    CUDA_POST_KERNEL_CHECK;
-#endif  // USE_CUDA
-  } else {
-#ifdef USE_GREENTEA
-    viennacl::ocl::context &ctx = viennacl::ocl::get_context(
-        this->device_->id());
-    viennacl::ocl::program &program = this->device_->program();
+  const uint_tp count = bottom[0]->count();
+  const uint_tp inner_dim = bottom[0]->count() / bottom[0]->shape(0);
+  vptr<const MOtype> top_diff = top[0]->gpu_diff();
+  vptr<const Dtype> top_indexes_data = top_indexes.gpu_data();
+  vptr<const Dtype> begins_data = begins.gpu_data();
+  vptr<const Dtype> counts_data = counts.gpu_data();
+  vptr<MItype> bottom_diff = bottom[0]->mutable_gpu_diff();
 
-    viennacl::ocl::kernel &oclk_br = program.get_kernel(
-        CL_KERNEL_SELECT("br_backward"));
-    viennacl::ocl::enqueue(
-        oclk_br(bottom[0]->count(), bottom[0]->count() / bottom[0]->shape(0),
-                  WrapHandle((cl_mem)(top[0]->gpu_diff()), &ctx),
-                  WrapHandle((cl_mem)(top_indexes.gpu_data()), &ctx),
-                  WrapHandle((cl_mem)(begins.gpu_data()), &ctx),
-                  WrapHandle((cl_mem)(counts.gpu_data()), &ctx),
-                  WrapHandle((cl_mem)(bottom[0]->mutable_gpu_diff()), &ctx)),
-        ctx.get_queue());
-#endif  // USE_GREENTEA
-  }
+  shared_ptr<DeviceKernel> kernel =
+                                 this->device_program_->GetKernel("BRBackward");
+  kernel->add_arg(&count);
+  kernel->add_arg(&inner_dim);
+  kernel->add_arg(&top_diff);
+  kernel->add_arg(&top_indexes_data);
+  kernel->add_arg(&begins_data);
+  kernel->add_arg(&counts_data);
+  kernel->add_arg(&bottom_diff);
+
+  vector<size_t> work_size(1, count);
+  vector<size_t> group;
+  vector<size_t> local;
+  this->device_->get_threads(&work_size, &group, &local, kernel.get(), true);
+  kernel->Execute(group, local);
 }
 
-INSTANTIATE_LAYER_GPU_FUNCS(BatchReindexLayer);
+INSTANTIATE_CLASST_FUNC_3T_GUARDED(BatchReindexLayer, GenerateProgram,
+                                  (half_fp), (half_fp), (half_fp));
+INSTANTIATE_CLASST_FUNC_3T_GUARDED(BatchReindexLayer, GenerateProgram,
+                                  (float), (float), (float));
+INSTANTIATE_CLASST_FUNC_3T_GUARDED(BatchReindexLayer, GenerateProgram,
+                                  (double), (double), (double));
 
+INSTANTIATE_CLASST_FUNC_3T_GUARDED(BatchReindexLayer, Forward_gpu,
+                                  (half_fp), (half_fp), (half_fp));
+INSTANTIATE_CLASST_FUNC_3T_GUARDED(BatchReindexLayer, Forward_gpu,
+                                  (float), (float), (float));
+INSTANTIATE_CLASST_FUNC_3T_GUARDED(BatchReindexLayer, Forward_gpu,
+                                  (double), (double), (double));
+
+INSTANTIATE_CLASST_FUNC_3T_GUARDED(BatchReindexLayer, Backward_gpu,
+                                  (half_fp), (half_fp), (half_fp));
+INSTANTIATE_CLASST_FUNC_3T_GUARDED(BatchReindexLayer, Backward_gpu,
+                                  (float), (float), (float));
+INSTANTIATE_CLASST_FUNC_3T_GUARDED(BatchReindexLayer, Backward_gpu,
+                                  (double), (double), (double));
 }  // namespace caffe

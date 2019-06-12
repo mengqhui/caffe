@@ -23,7 +23,7 @@ void hdf5_load_nd_dataset_helper(
   CHECK_LE(ndims, max_dim);
 
   // Verify that the data format is what we expect: float or double.
-  std::vector<hsize_t> dims(ndims);
+  vector<hsize_t> dims(ndims);
   H5T_class_t class_;
   status = H5LTget_dataset_info(
       file_id, dataset_name_, dims.data(), &class_, NULL);
@@ -83,6 +83,18 @@ void hdf5_load_nd_dataset_helper(
   }
 }
 
+#ifdef USE_HALF
+template <>
+void hdf5_load_nd_dataset<half_fp>(hid_t file_id, const char* dataset_name_,
+        int min_dim, int max_dim, Blob<half_fp>* blob, bool reshape) {
+  hdf5_load_nd_dataset_helper(file_id, dataset_name_, min_dim, max_dim, blob,
+                              reshape);
+  herr_t status = H5LTread_dataset_short(
+    file_id, dataset_name_, (int16_t*)(blob->mutable_cpu_data()));
+  CHECK_GE(status, 0) << "Failed to read float dataset " << dataset_name_;
+}
+#endif
+
 template <>
 void hdf5_load_nd_dataset<float>(hid_t file_id, const char* dataset_name_,
         int min_dim, int max_dim, Blob<float>* blob, bool reshape) {
@@ -102,6 +114,30 @@ void hdf5_load_nd_dataset<double>(hid_t file_id, const char* dataset_name_,
     file_id, dataset_name_, blob->mutable_cpu_data());
   CHECK_GE(status, 0) << "Failed to read double dataset " << dataset_name_;
 }
+
+#ifdef USE_HALF
+template <>
+void hdf5_save_nd_dataset<half_fp>(
+    const hid_t file_id, const string& dataset_name, const Blob<half_fp>& blob,
+    bool write_diff) {
+  // FIXME
+  int_tp num_axes = blob.num_axes();
+  hsize_t *dims = new hsize_t[num_axes];
+  for (int_tp i = 0; i < num_axes; ++i) {
+    dims[i] = blob.shape(i);
+  }
+  const half_fp* data;
+  if (write_diff) {
+    data = blob.cpu_diff();
+  } else {
+    data = blob.cpu_data();
+  }
+  herr_t status = H5LTmake_dataset_short(
+      file_id, dataset_name.c_str(), num_axes, dims, (const int16_t*)(data));
+  CHECK_GE(status, 0) << "Failed to make float dataset " << dataset_name;
+  delete[] dims;
+}
+#endif
 
 template <>
 void hdf5_save_nd_dataset<float>(

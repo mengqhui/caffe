@@ -13,11 +13,10 @@ namespace caffe {
 using std::min;
 using std::max;
 
-template <typename Dtype>
-LayerParameter SPPLayer<Dtype>::GetPoolingParam(const int_tp pyramid_level,
-                                                const int_tp bottom_h,
-                                                const int_tp bottom_w,
-                                                const SPPParameter spp_param) {
+template<typename Dtype, typename MItype, typename MOtype>
+LayerParameter SPPLayer<Dtype, MItype, MOtype>::GetPoolingParam(
+    const int_tp pyramid_level, const int_tp bottom_h, const int_tp bottom_w,
+    const SPPParameter spp_param) {
   LayerParameter pooling_param;
   int_tp num_bins = pow(2, pyramid_level);
 
@@ -63,9 +62,10 @@ LayerParameter SPPLayer<Dtype>::GetPoolingParam(const int_tp pyramid_level,
   return pooling_param;
 }
 
-template <typename Dtype>
-void SPPLayer<Dtype>::LayerSetUp(const vector<Blob<Dtype>*>& bottom,
-      const vector<Blob<Dtype>*>& top) {
+template<typename Dtype, typename MItype, typename MOtype>
+void SPPLayer<Dtype, MItype, MOtype>::LayerSetUp(
+    const vector<Blob<MItype>*>& bottom,
+    const vector<Blob<MOtype>*>& top) {
   SPPParameter spp_param = this->layer_param_.spp_param();
 
   num_ = bottom[0]->num();
@@ -91,8 +91,8 @@ void SPPLayer<Dtype>::LayerSetUp(const vector<Blob<Dtype>*>& bottom,
     // pooling layer setup
     LayerParameter pooling_param = GetPoolingParam(0, bottom_h_, bottom_w_,
         spp_param);
-    pooling_layers_.push_back(shared_ptr<PoolingLayer<Dtype> > (
-        new PoolingLayer<Dtype>(pooling_param)));
+    pooling_layers_.push_back(shared_ptr<PoolingLayer<Dtype, MItype, MOtype> > (
+        new PoolingLayer<Dtype, MItype, MOtype>(pooling_param)));
     pooling_layers_[0]->SetUp(bottom, top);
     return;
   }
@@ -103,7 +103,7 @@ void SPPLayer<Dtype>::LayerSetUp(const vector<Blob<Dtype>*>& bottom,
 
   // split layer setup
   LayerParameter split_param;
-  split_layer_.reset(new SplitLayer<Dtype>(split_param));
+  split_layer_.reset(new SplitLayer<Dtype, MItype, MOtype>(split_param));
   split_layer_->SetUp(bottom, split_top_vec_);
 
   for (int_tp i = 0; i < pyramid_height_; i++) {
@@ -120,8 +120,8 @@ void SPPLayer<Dtype>::LayerSetUp(const vector<Blob<Dtype>*>& bottom,
     LayerParameter pooling_param = GetPoolingParam(
         i, bottom_h_, bottom_w_, spp_param);
 
-    pooling_layers_.push_back(shared_ptr<PoolingLayer<Dtype> > (
-        new PoolingLayer<Dtype>(pooling_param)));
+    pooling_layers_.push_back(shared_ptr<PoolingLayer<Dtype, MItype, MOtype> > (
+        new PoolingLayer<Dtype, MItype, MOtype>(pooling_param)));
     pooling_layers_[i]->SetUp(*pooling_bottom_vecs_[i], *pooling_top_vecs_[i]);
 
     // flatten layer output holders setup
@@ -131,7 +131,8 @@ void SPPLayer<Dtype>::LayerSetUp(const vector<Blob<Dtype>*>& bottom,
 
     // flatten layer setup
     LayerParameter flatten_param;
-    flatten_layers_.push_back(new FlattenLayer<Dtype>(flatten_param));
+    flatten_layers_.push_back(
+        new FlattenLayer<Dtype, MItype, MOtype>(flatten_param));
     flatten_layers_[i]->SetUp(*pooling_top_vecs_[i], *flatten_top_vecs_[i]);
 
     // concat layer input holders setup
@@ -140,13 +141,15 @@ void SPPLayer<Dtype>::LayerSetUp(const vector<Blob<Dtype>*>& bottom,
 
   // concat layer setup
   LayerParameter concat_param;
-  concat_layer_.reset(new ConcatLayer<Dtype>(concat_param));
+  concat_layer_.reset(new ConcatLayer<Dtype, MItype, MOtype>(concat_param));
   concat_layer_->SetUp(concat_bottom_vec_, top);
+
+  this->InitializeQuantizers(bottom, top);
 }
 
-template <typename Dtype>
-void SPPLayer<Dtype>::Reshape(const vector<Blob<Dtype>*>& bottom,
-      const vector<Blob<Dtype>*>& top) {
+template<typename Dtype, typename MItype, typename MOtype>
+void SPPLayer<Dtype, MItype, MOtype>::Reshape(
+    const vector<Blob<MItype>*>& bottom, const vector<Blob<MOtype>*>& top) {
   CHECK_EQ(4, bottom[0]->num_axes()) << "Input must have 4 axes, "
       << "corresponding to (num, channels, height, width)";
   // Do nothing if bottom shape is unchanged since last Reshape
@@ -164,7 +167,8 @@ void SPPLayer<Dtype>::Reshape(const vector<Blob<Dtype>*>& bottom,
   if (pyramid_height_ == 1) {
     LayerParameter pooling_param = GetPoolingParam(0, bottom_h_, bottom_w_,
         spp_param);
-    pooling_layers_[0].reset(new PoolingLayer<Dtype>(pooling_param));
+    pooling_layers_[0].reset(
+        new PoolingLayer<Dtype, MItype, MOtype>(pooling_param));
     pooling_layers_[0]->SetUp(bottom, top);
     pooling_layers_[0]->Reshape(bottom, top);
     return;
@@ -175,7 +179,7 @@ void SPPLayer<Dtype>::Reshape(const vector<Blob<Dtype>*>& bottom,
         i, bottom_h_, bottom_w_, spp_param);
 
     pooling_layers_[i].reset(
-        new PoolingLayer<Dtype>(pooling_param));
+        new PoolingLayer<Dtype, MItype, MOtype>(pooling_param));
     pooling_layers_[i]->SetUp(
         *pooling_bottom_vecs_[i], *pooling_top_vecs_[i]);
     pooling_layers_[i]->Reshape(
@@ -186,9 +190,9 @@ void SPPLayer<Dtype>::Reshape(const vector<Blob<Dtype>*>& bottom,
   concat_layer_->Reshape(concat_bottom_vec_, top);
 }
 
-template <typename Dtype>
-void SPPLayer<Dtype>::Forward_cpu(const vector<Blob<Dtype>*>& bottom,
-      const vector<Blob<Dtype>*>& top) {
+template<typename Dtype, typename MItype, typename MOtype>
+void SPPLayer<Dtype, MItype, MOtype>::Forward_cpu(
+    const vector<Blob<MItype>*>& bottom, const vector<Blob<MOtype>*>& top) {
   if (pyramid_height_ == 1) {
     pooling_layers_[0]->Forward(bottom, top);
     return;
@@ -203,9 +207,10 @@ void SPPLayer<Dtype>::Forward_cpu(const vector<Blob<Dtype>*>& bottom,
   concat_layer_->Forward(concat_bottom_vec_, top);
 }
 
-template <typename Dtype>
-void SPPLayer<Dtype>::Backward_cpu(const vector<Blob<Dtype>*>& top,
-      const vector<bool>& propagate_down, const vector<Blob<Dtype>*>& bottom) {
+template<typename Dtype, typename MItype, typename MOtype>
+void SPPLayer<Dtype, MItype, MOtype>::Backward_cpu(
+    const vector<Blob<MOtype>*>& top, const vector<bool>& propagate_down,
+    const vector<Blob<MItype>*>& bottom) {
   if (!propagate_down[0]) {
     return;
   }
@@ -224,7 +229,13 @@ void SPPLayer<Dtype>::Backward_cpu(const vector<Blob<Dtype>*>& top,
   split_layer_->Backward(split_top_vec_, propagate_down, bottom);
 }
 
-INSTANTIATE_CLASS(SPPLayer);
+INSTANTIATE_CLASS_3T_GUARDED(SPPLayer, (half_fp), (half_fp), (half_fp));
+INSTANTIATE_CLASS_3T_GUARDED(SPPLayer, (float), (float), (float));
+INSTANTIATE_CLASS_3T_GUARDED(SPPLayer, (double), (double), (double));
+
 REGISTER_LAYER_CLASS(SPP);
+REGISTER_LAYER_CLASS_INST(SPP, (half_fp), (half_fp), (half_fp));
+REGISTER_LAYER_CLASS_INST(SPP, (float), (float), (float));
+REGISTER_LAYER_CLASS_INST(SPP, (double), (double), (double));
 
 }  // namespace caffe

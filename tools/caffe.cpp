@@ -14,24 +14,25 @@ namespace bp = boost::python;
 
 #include "boost/algorithm/string.hpp"
 #include "caffe/caffe.hpp"
-#include "caffe/device.hpp"
+#include "caffe/backend/device.hpp"
 #include "caffe/util/signal_handler.h"
 
-#ifdef USE_LIBDNN
-#include "caffe/layers/libdnn_conv_layer.hpp"
-#endif
-
+using caffe::BlobBase;
 using caffe::Blob;
 using caffe::Caffe;
 using caffe::Net;
+using caffe::LayerBase;
 using caffe::Layer;
 using caffe::Solver;
-using caffe::shared_ptr;
-using caffe::string;
 using caffe::Timer;
-using caffe::vector;
-using caffe::device;
+using caffe::Device;
+using caffe::vptr;
+
+using std::string;
 using std::ostringstream;
+using std::shared_ptr;
+using std::vector;
+
 
 DEFINE_string(gpu, "",
     "Optional; run in GPU mode on given device IDs separated by ','."
@@ -61,10 +62,13 @@ DEFINE_string(sigint_effect, "stop",
 DEFINE_string(sighup_effect, "snapshot",
              "Optional; action to take when a SIGHUP signal is received: "
              "snapshot, stop or none.");
+DEFINE_bool(lt, false,
+    "Optional; enable per layer timings");
+
 
 // A simple registry for caffe commands.
 typedef int (*BrewFunction)();
-typedef std::map<caffe::string, BrewFunction> BrewMap;
+typedef std::map<string, BrewFunction> BrewMap;
 BrewMap g_brew_map;
 
 #define RegisterBrewFunction(func) \
@@ -78,7 +82,7 @@ class __Registerer_##func { \
 __Registerer_##func g_registerer_##func; \
 }
 
-static BrewFunction GetBrewFunction(const caffe::string& name) {
+static BrewFunction GetBrewFunction(const string& name) {
   if (g_brew_map.count(name)) {
     return g_brew_map[name];
   } else {
@@ -156,38 +160,24 @@ int device_query() {
       caffe::Caffe::SetDevice(gpus[i]);
       caffe::Caffe::DeviceQuery();
     }
-#ifdef USE_GREENTEA
-  if (Caffe::GetDefaultDevice()->backend() == caffe::BACKEND_OpenCL) {
+#ifdef USE_OPENCL
+  if (Caffe::GetDefaultDevice()->backend() == caffe::BACKEND_OPENCL) {
     if (gpus.size() > 0 && gpus[0] >= 0) {
       // Explicitly call for OCL + FFT
       caffe::Caffe::TeardownDevice(gpus[0]);
     }
   }
-#endif  // USE_GREENTEA
+#endif  // USE_OPENCL
 #endif  // !CPU_ONLY
   }
   return 0;
 }
 RegisterBrewFunction(device_query);
 
-// Load the weights from the specified caffemodel(s) into the train and
-// test nets.
-void CopyLayers(caffe::Solver<float>* solver, const std::string& model_list) {
-  std::vector<std::string> model_names;
-  boost::split(model_names, model_list, boost::is_any_of(",") );
-  for (int i = 0; i < model_names.size(); ++i) {
-    LOG(INFO) << "Finetuning from " << model_names[i];
-    solver->net()->CopyTrainedLayersFrom(model_names[i]);
-    for (int j = 0; j < solver->test_nets().size(); ++j) {
-      solver->test_nets()[j]->CopyTrainedLayersFrom(model_names[i]);
-    }
-  }
-}
-
 // Translate the signal effect the user specified on the command-line to the
 // corresponding enumeration.
 caffe::SolverAction::Enum GetRequestedAction(
-    const std::string& flag_value) {
+    const string& flag_value) {
   if (flag_value == "stop") {
     return caffe::SolverAction::STOP;
   }
@@ -222,9 +212,9 @@ int train() {
   if (FLAGS_gpu.size() == 0
       && solver_param.has_solver_mode()
       && solver_param.solver_mode() == caffe::SolverParameter_SolverMode_GPU) {
-      if (solver_param.has_device_id()) {
+      if (solver_param.has_device()) {
           FLAGS_gpu = "" +
-              boost::lexical_cast<string>(solver_param.device_id());
+              boost::lexical_cast<string>(solver_param.device());
       } else {  // Set default GPU if unspecified
           FLAGS_gpu = "" + boost::lexical_cast<string>(0);
       }
@@ -245,7 +235,7 @@ int train() {
       s << (i ? ", " : "") << gpus[i];
     }
     LOG(INFO) << "Using GPUs " << s.str();
-    solver_param.set_device_id(gpus[0]);
+    solver_param.set_device(gpus[0]);
     // Initialize the first device
     Caffe::SetDevice(gpus[0]);
     Caffe::set_mode(Caffe::GPU);
@@ -257,16 +247,22 @@ int train() {
         GetRequestedAction(FLAGS_sigint_effect),
         GetRequestedAction(FLAGS_sighup_effect));
 
+  if (FLAGS_snapshot.size()) {
+    solver_param.clear_weights();
+  } else if (FLAGS_weights.size()) {
+    solver_param.clear_weights();
+    solver_param.add_weights(FLAGS_weights);
+  }
+
   shared_ptr<caffe::Solver<float> >
-      solver(caffe::SolverRegistry<float>::CreateSolver(solver_param));
+      solver(caffe::SolverRegistry<float>::CreateSolver(solver_param,
+                                                    Caffe::GetDefaultDevice()));
 
   solver->SetActionFunction(signal_handler.GetActionFunction());
 
   if (FLAGS_snapshot.size()) {
     LOG(INFO) << "Resuming from " << FLAGS_snapshot;
     solver->Restore(FLAGS_snapshot.c_str());
-  } else if (FLAGS_weights.size()) {
-    CopyLayers(solver.get(), FLAGS_weights);
   }
 
   LOG(INFO) << "Starting Optimization";
@@ -284,8 +280,8 @@ int train() {
   }
   LOG(INFO) << "Optimization Done.";
 
-#ifdef USE_GREENTEA
-  if (Caffe::GetDefaultDevice()->backend() == caffe::BACKEND_OpenCL) {
+#ifdef USE_OPENCL
+  if (Caffe::GetDefaultDevice()->backend() == caffe::BACKEND_OPENCL) {
     if (gpus.size() > 0 && gpus[0] >= 0) {
       // Explicitly call for OCL + FFT
       caffe::Caffe::TeardownDevice(gpus[0]);
@@ -320,7 +316,9 @@ int test() {
   // Instantiate the caffe net.
   Net<float> caffe_net(FLAGS_model, caffe::TEST,
                        Caffe::GetDefaultDevice(), FLAGS_level, &stages);
-  caffe_net.CopyTrainedLayersFrom(FLAGS_weights);
+  if (FLAGS_weights.size() > 0) {
+    caffe_net.CopyTrainedLayersFrom(FLAGS_weights);
+  }
   LOG(INFO) << "Running for " << FLAGS_iterations << " iterations.";
 
   vector<int> test_score_output_id;
@@ -328,12 +326,13 @@ int test() {
   float loss = 0;
   for (int_tp i = 0; i < FLAGS_iterations; ++i) {
     float iter_loss;
-    const vector<Blob<float>*>& result =
+    const vector<BlobBase*>& result =
         caffe_net.Forward(&iter_loss);
     loss += iter_loss;
     int_tp idx = 0;
     for (int_tp j = 0; j < result.size(); ++j) {
-      const float* result_vec = result[j]->cpu_data();
+      const float* result_vec = static_cast<Blob<float>*>(result[j])
+          ->cpu_data();
       for (int_tp k = 0; k < result[j]->count(); ++k, ++idx) {
         const float score = result_vec[k];
         if (i == 0) {
@@ -342,7 +341,7 @@ int test() {
         } else {
           test_score[idx] += score;
         }
-        const std::string& output_name = caffe_net.blob_names()[
+        const string& output_name = caffe_net.blob_names()[
             caffe_net.output_blob_indices()[j]];
         LOG(INFO) << "Batch " << i << ", " << output_name << " = " << score;
       }
@@ -351,7 +350,7 @@ int test() {
   loss /= FLAGS_iterations;
   LOG(INFO) << "Loss: " << loss;
   for (int_tp i = 0; i < test_score.size(); ++i) {
-    const std::string& output_name = caffe_net.blob_names()[
+    const string& output_name = caffe_net.blob_names()[
         caffe_net.output_blob_indices()[test_score_output_id[i]]];
     const float loss_weight = caffe_net.blob_loss_weights()[
         caffe_net.output_blob_indices()[test_score_output_id[i]]];
@@ -363,8 +362,8 @@ int test() {
     }
     LOG(INFO) << output_name << " = " << mean_score << loss_msg_stream.str();
   }
-#ifdef USE_GREENTEA
-  if (Caffe::GetDefaultDevice()->backend() == caffe::BACKEND_OpenCL) {
+#ifdef USE_OPENCL
+  if (Caffe::GetDefaultDevice()->backend() == caffe::BACKEND_OPENCL) {
     if (gpus.size() > 0 && gpus[0] >= 0) {
       // Explicitly call for OCL + FFT
       caffe::Caffe::TeardownDevice(gpus[0]);
@@ -400,6 +399,9 @@ int time() {
   // Instantiate the caffe net.
   Net<float> caffe_net(FLAGS_model, phase,
                        Caffe::GetDefaultDevice(), FLAGS_level, &stages);
+  if (FLAGS_weights.size() > 0) {
+    caffe_net.CopyTrainedLayersFrom(FLAGS_weights);
+  }
 
   // Do a clean forward and backward pass, so that memory allocation are done
   // and future iterations will be more stable.
@@ -414,9 +416,9 @@ int time() {
     caffe_net.Backward();
   }
 
-  const vector<shared_ptr<Layer<float> > >& layers = caffe_net.layers();
-  const vector<vector<Blob<float>*> >& bottom_vecs = caffe_net.bottom_vecs();
-  const vector<vector<Blob<float>*> >& top_vecs = caffe_net.top_vecs();
+  const vector<shared_ptr<LayerBase > >& layers = caffe_net.layers();
+  const vector<vector<BlobBase*> >& bottom_vecs = caffe_net.bottom_vecs();
+  const vector<vector<BlobBase*> >& top_vecs = caffe_net.top_vecs();
   const vector<vector<bool> >& bottom_need_backward =
       caffe_net.bottom_need_backward();
   LOG(INFO) << "*** Benchmark begins ***";
@@ -426,20 +428,28 @@ int time() {
   Timer forward_timer;
   Timer backward_timer;
   Timer timer;
-  std::vector<double> forward_time_per_layer(layers.size(), 0.0);
-  std::vector<double> backward_time_per_layer(layers.size(), 0.0);
+  vector<double> forward_time_per_layer(layers.size(), 0.0);
+  vector<double> backward_time_per_layer(layers.size(), 0.0);
   double forward_time = 0.0;
   double backward_time = 0.0;
+
   for (int_tp j = 0; j < FLAGS_iterations; ++j) {
     Timer iter_timer;
     iter_timer.Start();
     forward_timer.Start();
     for (int_tp i = 0; i < layers.size(); ++i) {
-      timer.Start();
-      layers[i]->Forward(bottom_vecs[i], top_vecs[i]);
-      Caffe::Synchronize(Caffe::GetDefaultDevice()->id());
-      forward_time_per_layer[i] += timer.MicroSeconds();
+      if (FLAGS_lt) {
+        timer.Start();
+      }
+
+      layers[i]->Forward(bottom_vecs[i], top_vecs[i], nullptr);
+
+      if (FLAGS_lt) {
+        Caffe::Synchronize(Caffe::GetDefaultDevice()->id());
+        forward_time_per_layer[i] += timer.MicroSeconds();
+      }
     }
+    Caffe::Synchronize(Caffe::GetDefaultDevice()->id());
     forward_time += forward_timer.MicroSeconds();
     if (phase == caffe::TRAIN) {
       backward_timer.Start();
@@ -455,15 +465,18 @@ int time() {
     LOG(INFO) << "Iteration: " << j + 1 << " forward-backward time: "
       << iter_timer.MilliSeconds() << " ms.";
   }
-  LOG(INFO) << "Average time per layer: ";
-  for (int_tp i = 0; i < layers.size(); ++i) {
-    const caffe::string& layername = layers[i]->layer_param().name();
-    LOG(INFO) << std::setfill(' ') << std::setw(10) << layername <<
-      "\tforward: " << forward_time_per_layer[i] / 1000 /
-      FLAGS_iterations << " ms.";
-    LOG(INFO) << std::setfill(' ') << std::setw(10) << layername  <<
-      "\tbackward: " << backward_time_per_layer[i] / 1000 /
-      FLAGS_iterations << " ms.";
+
+  if (FLAGS_lt) {
+    LOG(INFO) << "Average time per layer: ";
+    for (int_tp i = 0; i < layers.size(); ++i) {
+      const string& layername = layers[i]->layer_param().name();
+      LOG(INFO) << std::setfill(' ') << std::setw(10) << layername <<
+        "\tforward: " << forward_time_per_layer[i] / 1000 /
+        FLAGS_iterations << " ms.";
+      LOG(INFO) << std::setfill(' ') << std::setw(10) << layername  <<
+        "\tbackward: " << backward_time_per_layer[i] / 1000 /
+        FLAGS_iterations << " ms.";
+    }
   }
   total_timer.Stop();
   LOG(INFO) << "Average Forward pass: " << forward_time / 1000 /
@@ -475,8 +488,8 @@ int time() {
   LOG(INFO) << "Total Time: " << total_timer.MilliSeconds() << " ms.";
   LOG(INFO) << "*** Benchmark ends ***";
 
-#ifdef USE_GREENTEA
-  if (Caffe::GetDefaultDevice()->backend() == caffe::BACKEND_OpenCL) {
+#ifdef USE_OPENCL
+  if (Caffe::GetDefaultDevice()->backend() == caffe::BACKEND_OPENCL) {
     if (gpus.size() > 0 && gpus[0] >= 0) {
       // Explicitly call for OCL + FFT
       caffe::Caffe::TeardownDevice(gpus[0]);
@@ -486,60 +499,6 @@ int time() {
   return 0;
 }
 RegisterBrewFunction(time);
-
-
-int autotune() {
-  CHECK_GT(FLAGS_model.size(), 0) << "Need a model definition to time.";
-
-  vector<int> gpus;
-  get_gpus(&gpus);
-  if (gpus.size() == 0) {
-    LOG(INFO) << "Use CPU.";
-    Caffe::set_mode(Caffe::CPU);
-  } else {
-#ifndef CPU_ONLY
-    // Load all devices that will be used
-    Caffe::SetDevices(gpus);
-
-    ostringstream s;
-    for (int_tp i = 0; i < gpus.size(); ++i) {
-      s << (i ? ", " : "") << gpus[i];
-    }
-    LOG(INFO) << "Using GPUs " << s.str();
-    // Initialize the first device
-    Caffe::SetDevice(gpus[0]);
-    Caffe::set_mode(Caffe::GPU);
-    Caffe::set_solver_count(gpus.size());
-#endif  // !CPU_ONLY
-  }
-
-  caffe::SignalHandler signal_handler(
-        GetRequestedAction(FLAGS_sigint_effect),
-        GetRequestedAction(FLAGS_sighup_effect));
-
-  Net<float> net(FLAGS_model, caffe::TRAIN, Caffe::GetDefaultDevice());
-
-  for (int i = 0; i < net.layers().size(); ++i) {
-#ifdef USE_LIBDNN
-    shared_ptr<caffe::LibDNNConvolutionLayer<float> > layer =
-        boost::dynamic_pointer_cast<caffe::LibDNNConvolutionLayer<float> >
-                (net.layers()[i]);
-    if (layer.get() != nullptr) {
-      float* top_data = net.top_vecs()[i][0]->mutable_gpu_data();
-      float* top_diff = net.top_vecs()[i][0]->mutable_gpu_diff();
-      float* bottom_data = net.top_vecs()[i][0]->mutable_gpu_data();
-      float* bottom_diff = net.top_vecs()[i][0]->mutable_gpu_diff();
-      int_tp batch_size = net.top_vecs()[i][0]->shape(0);
-      layer->Tune(top_data, top_diff, bottom_data, bottom_diff, batch_size);
-    }
-#endif  // USE_LIBDNN
-  }
-  return 0;
-}
-RegisterBrewFunction(autotune);
-
-
-
 
 int main(int argc, char** argv) {
   // Print output to stderr (while still logging).
@@ -553,15 +512,14 @@ int main(int argc, char** argv) {
       "  train           train or finetune a model\n"
       "  test            score a model\n"
       "  device_query    show GPU diagnostic information\n"
-      "  time            benchmark model execution time"
-      "  autotune        autotune a model");
+      "  time            benchmark model execution time");
   // Run tool or show usage.
   caffe::GlobalInit(&argc, &argv);
   if (argc == 2) {
 #ifdef WITH_PYTHON_LAYER
     try {
 #endif
-      return GetBrewFunction(caffe::string(argv[1]))();
+      return GetBrewFunction(string(argv[1]))();
 #ifdef WITH_PYTHON_LAYER
     } catch (bp::error_already_set) {
       PyErr_Print();

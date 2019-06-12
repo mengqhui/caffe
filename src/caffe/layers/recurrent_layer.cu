@@ -7,15 +7,12 @@
 #include "caffe/layers/recurrent_layer.hpp"
 #include "caffe/util/math_functions.hpp"
 
-#ifdef USE_GREENTEA
-#include "caffe/greentea/greentea_math_functions.hpp"
-#endif  // USE_GREENTEA
-
 namespace caffe {
 
-template <typename Dtype>
-void RecurrentLayer<Dtype>::Forward_gpu(const vector<Blob<Dtype>*>& bottom,
-    const vector<Blob<Dtype>*>& top) {
+template<typename Dtype, typename MItype, typename MOtype>
+void RecurrentLayer<Dtype, MItype, MOtype>::Forward_gpu(
+                                          const vector<Blob<MItype>*>& bottom,
+                                          const vector<Blob<MOtype>*>& top) {
   // Hacky fix for test time... reshare all the shared blobs.
   // TODO: somehow make this work non-hackily.
   if (this->phase_ == TEST) {
@@ -27,20 +24,10 @@ void RecurrentLayer<Dtype>::Forward_gpu(const vector<Blob<Dtype>*>& bottom,
     for (int i = 0; i < recur_input_blobs_.size(); ++i) {
       const int count = recur_input_blobs_[i]->count();
       DCHECK_EQ(count, recur_output_blobs_[i]->count());
-      const Dtype* timestep_T_data = recur_output_blobs_[i]->gpu_data();
-      Dtype* timestep_0_data = recur_input_blobs_[i]->mutable_gpu_data();
-      if (this->device_->backend() == BACKEND_CUDA) {
-#ifdef USE_CUDA
-        caffe_copy(count, timestep_T_data, timestep_0_data);
-#endif  // USE_CUDA
-      } else {
-#ifdef USE_GREENTEA
-        viennacl::ocl::context &ctx = viennacl::ocl::get_context(
-            this->device_->id());
-        greentea_copy<Dtype>(count, (cl_mem)timestep_T_data, 0,
-                             (cl_mem)timestep_0_data, 0, &ctx);
-#endif  // USE_GREENTEA
-      }
+      vptr<const Dtype> timestep_T_data = recur_output_blobs_[i]->gpu_data();
+      vptr<Dtype> timestep_0_data = recur_input_blobs_[i]->mutable_gpu_data();
+      this->device_->template copy<Dtype>(count, timestep_T_data,
+                                          timestep_0_data);
     }
   }
 
@@ -54,6 +41,13 @@ void RecurrentLayer<Dtype>::Forward_gpu(const vector<Blob<Dtype>*>& bottom,
   }
 }
 
-INSTANTIATE_LAYER_GPU_FORWARD(RecurrentLayer);
+
+INSTANTIATE_CLASST_FUNC_3T_GUARDED(RecurrentLayer, Forward_gpu,
+                                  (half_fp), (half_fp), (half_fp));
+INSTANTIATE_CLASST_FUNC_3T_GUARDED(RecurrentLayer, Forward_gpu,
+                                  (float), (float), (float));
+INSTANTIATE_CLASST_FUNC_3T_GUARDED(RecurrentLayer, Forward_gpu,
+                                  (double), (double), (double));
+
 
 }  // namespace caffe

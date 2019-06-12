@@ -6,16 +6,17 @@
 
 namespace caffe {
 
-template<typename Dtype>
-void MergeCropLayer<Dtype>::LayerSetUp(const vector<Blob<Dtype>*>& bottom,
-                                       const vector<Blob<Dtype>*>& top) {
+template<typename Dtype, typename MItype, typename MOtype>
+void MergeCropLayer<Dtype, MItype, MOtype>::LayerSetUp(
+                                          const vector<Blob<MItype>*>& bottom,
+                                          const vector<Blob<MOtype>*>& top) {
   // By default, forward both a and b
-  forward_.push_back(1);
-  forward_.push_back(1);
+  forward_.push_back(true);
+  forward_.push_back(true);
 
   // By default, backward a and do not backward b
-  backward_.push_back(1);
-  backward_.push_back(0);
+  backward_.push_back(true);
+  backward_.push_back(false);
 
   op_ = MergeCropParameter_MergeOp_STACK;
 
@@ -30,12 +31,14 @@ void MergeCropLayer<Dtype>::LayerSetUp(const vector<Blob<Dtype>*>& bottom,
     op_ = mergecrop_param.operation();
   }
 
+  this->InitializeQuantizers(bottom, top);
   Reshape(bottom, top);
 }
 
-template<typename Dtype>
-void MergeCropLayer<Dtype>::Reshape(const vector<Blob<Dtype>*>& bottom,
-                                    const vector<Blob<Dtype>*>& top) {
+template<typename Dtype, typename MItype, typename MOtype>
+void MergeCropLayer<Dtype, MItype, MOtype>::Reshape(
+                                          const vector<Blob<MItype>*>& bottom,
+                                          const vector<Blob<MOtype>*>& top) {
   // Same number of batches required
   CHECK_EQ(bottom[0]->shape(0), bottom[1]->shape(0));
 
@@ -65,18 +68,24 @@ void MergeCropLayer<Dtype>::Reshape(const vector<Blob<Dtype>*>& bottom,
     shape_a_data[i] = bottom[0]->shape()[i + 2];
     shape_b_data[i] = bottom[1]->shape()[i + 2];
   }
+
+  if (Caffe::mode() == Caffe::GPU && this->device_program_.get() == nullptr) {
+    this->GenerateProgram();
+  }
 }
 
-template<typename Dtype>
-void MergeCropLayer<Dtype>::Forward_cpu(const vector<Blob<Dtype>*>& bottom,
-                                        const vector<Blob<Dtype>*>& top) {
+template<typename Dtype, typename MItype, typename MOtype>
+void MergeCropLayer<Dtype, MItype, MOtype>::Forward_cpu(
+                                          const vector<Blob<MItype>*>& bottom,
+                                          const vector<Blob<MOtype>*>& top) {
   LOG(FATAL)<< "Foward_cpu() not implemented for MergeCropLayer.";
 }
 
-template<typename Dtype>
-void MergeCropLayer<Dtype>::Backward_cpu(const vector<Blob<Dtype>*>& top,
-                                         const vector<bool>& propagate_down,
-                                         const vector<Blob<Dtype>*>& bottom) {
+template<typename Dtype, typename MItype, typename MOtype>
+void MergeCropLayer<Dtype, MItype, MOtype>::Backward_cpu(
+                                          const vector<Blob<MOtype>*>& top,
+                                          const vector<bool>& propagate_down,
+                                          const vector<Blob<MItype>*>& bottom) {
   LOG(FATAL)<< "Backward_cpu() not implemented for MergeCropLayer.";
 }
 
@@ -84,7 +93,13 @@ void MergeCropLayer<Dtype>::Backward_cpu(const vector<Blob<Dtype>*>& top,
 STUB_GPU(MergeCropLayer);
 #endif
 
-INSTANTIATE_CLASS(MergeCropLayer);
+INSTANTIATE_CLASS_3T_GUARDED(MergeCropLayer, (half_fp), (half_fp), (half_fp));
+INSTANTIATE_CLASS_3T_GUARDED(MergeCropLayer, (float), (float), (float));
+INSTANTIATE_CLASS_3T_GUARDED(MergeCropLayer, (double), (double), (double));
+
 REGISTER_LAYER_CLASS(MergeCrop);
+REGISTER_LAYER_CLASS_INST(MergeCrop, (half_fp), (half_fp), (half_fp));
+REGISTER_LAYER_CLASS_INST(MergeCrop, (float), (float), (float));
+REGISTER_LAYER_CLASS_INST(MergeCrop, (double), (double), (double));
 
 }  // namespace caffe

@@ -12,9 +12,10 @@
 
 namespace caffe {
 
-template<typename Dtype>
-void AffinityLayer<Dtype>::LayerSetUp(const vector<Blob<Dtype>*>& bottom,
-                                       const vector<Blob<Dtype>*>& top) {
+template<typename Dtype, typename MItype, typename MOtype>
+void AffinityLayer<Dtype, MItype, MOtype>::LayerSetUp(
+                  const vector<Blob<MItype>*>& bottom,
+                  const vector<Blob<MOtype>*>& top) {
   offsets_.clear();
   offsets_.resize(bottom.size());
   if (this->layer_param().has_affinity_param()) {
@@ -25,11 +26,14 @@ void AffinityLayer<Dtype>::LayerSetUp(const vector<Blob<Dtype>*>& bottom,
       offsets_[i] = affinity_param.offset(i);
     }
   }
+
+  this->InitializeQuantizers(bottom, top);
 }
 
-template<typename Dtype>
-void AffinityLayer<Dtype>::Reshape(const vector<Blob<Dtype>*>& bottom,
-                                    const vector<Blob<Dtype>*>& top) {
+template<typename Dtype, typename MItype, typename MOtype>
+void AffinityLayer<Dtype, MItype, MOtype>::Reshape(
+                  const vector<Blob<MItype>*>& bottom,
+                  const vector<Blob<MOtype>*>& top) {
   min_index_.clear();
   for (int_tp bidx = 0; bidx < bottom.size(); ++bidx) {
     // 1, #edges, height, width
@@ -45,9 +49,10 @@ void AffinityLayer<Dtype>::Reshape(const vector<Blob<Dtype>*>& bottom,
   }
 }
 
-template<typename Dtype>
-void AffinityLayer<Dtype>::Forward_cpu(const vector<Blob<Dtype>*>& bottom,
-                                        const vector<Blob<Dtype>*>& top) {
+template<typename Dtype, typename MItype, typename MOtype>
+void AffinityLayer<Dtype, MItype, MOtype>::Forward_cpu(
+                  const vector<Blob<MItype>*>& bottom,
+                  const vector<Blob<MOtype>*>& top) {
   for (int_tp bidx = 0; bidx < bottom.size(); ++bidx) {
     const Dtype* bottom_data = bottom[bidx]->cpu_data();
     Dtype* top_data = top[bidx]->mutable_cpu_data();
@@ -59,7 +64,6 @@ void AffinityLayer<Dtype>::Forward_cpu(const vector<Blob<Dtype>*>& bottom,
     int_tp xmin, ymin;
 
     // Construct affinity graph
-#pragma omp parallel for
     for (int_tp i = 0; i < bottom[bidx]->height() - 1; ++i) {
       for (int_tp j = 0; j < bottom[bidx]->width() - 1; ++j) {
         // Center
@@ -88,10 +92,11 @@ void AffinityLayer<Dtype>::Forward_cpu(const vector<Blob<Dtype>*>& bottom,
   }
 }
 
-template<typename Dtype>
-void AffinityLayer<Dtype>::Backward_cpu(const vector<Blob<Dtype>*>& top,
-                                         const vector<bool>& propagate_down,
-                                        const vector<Blob<Dtype>*>& bottom) {
+template<typename Dtype, typename MItype, typename MOtype>
+void AffinityLayer<Dtype, MItype, MOtype>::Backward_cpu(
+                          const vector<Blob<MOtype>*>& top,
+                          const vector<bool>& propagate_down,
+                          const vector<Blob<MItype>*>& bottom) {
   for (int_tp bidx = 0; bidx < bottom.size(); ++bidx) {
     if (propagate_down[bidx]) {
       const Dtype* top_diff = top[bidx]->cpu_diff();
@@ -128,7 +133,12 @@ void AffinityLayer<Dtype>::Backward_cpu(const vector<Blob<Dtype>*>& top,
   }
 }
 
-INSTANTIATE_CLASS(AffinityLayer);
+INSTANTIATE_CLASS_3T_GUARDED(AffinityLayer, (half_fp), (half_fp), (half_fp));
+INSTANTIATE_CLASS_3T_GUARDED(AffinityLayer, (float), (float), (float));
+INSTANTIATE_CLASS_3T_GUARDED(AffinityLayer, (double), (double), (double));
+
 REGISTER_LAYER_CLASS(Affinity);
+REGISTER_LAYER_CLASS_INST(Affinity, (float), (float), (float));
+REGISTER_LAYER_CLASS_INST(Affinity, (double), (double), (double));
 
 }  // namespace caffe

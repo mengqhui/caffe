@@ -10,7 +10,7 @@
 
 #ifdef USE_FFT
 #ifndef CPU_ONLY
-#ifdef USE_GREENTEA
+#ifdef USE_OPENCL
 #include <clFFT.h>
 #endif
 #endif
@@ -23,14 +23,14 @@
 namespace caffe {
 #ifdef USE_FFT
 
-template <typename Dtype>
+template<typename Dtype, typename MItype, typename MOtype>
 class ConvolutionLayerFFT : public BaseConvolutionLayer<Dtype> {
  public:
   explicit ConvolutionLayerFFT(const LayerParameter& param)
       : BaseConvolutionLayer<Dtype>(param) , fft_cpu_initialized_(false),
         fft_gpu_initialized_(false) {}
-  virtual void Reshape(const vector<Blob<Dtype>*>& bottom,
-                       const vector<Blob<Dtype>*>& top);
+  virtual void Reshape(const vector<Blob<MItype>*>& bottom,
+                       const vector<Blob<MOtype>*>& top);
   virtual ~ConvolutionLayerFFT<Dtype>();
 
   virtual inline const char* type() const { return "Convolution"; }
@@ -40,59 +40,59 @@ class ConvolutionLayerFFT : public BaseConvolutionLayer<Dtype> {
   virtual inline bool EqualNumBottomTopBlobs() const { return true; }
 
  protected:
-  virtual void Forward_cpu(const vector<Blob<Dtype>*>& bottom,
-                           const vector<Blob<Dtype>*>& top);
-#ifdef USE_GREENTEA
-  virtual void Forward_gpu(const vector<Blob<Dtype>*>& bottom,
-                           const vector<Blob<Dtype>*>& top);
+  virtual void Forward_cpu(const vector<Blob<MItype>*>& bottom,
+                           const vector<Blob<MOtype>*>& top);
+#ifdef USE_OPENCL
+  virtual void Forward_gpu(const vector<Blob<MItype>*>& bottom,
+                           const vector<Blob<MOtype>*>& top);
 #endif
-  virtual void Backward_cpu(const vector<Blob<Dtype>*>& top,
+  virtual void Backward_cpu(const vector<Blob<MOtype>*>& top,
                             const vector<bool>& propagate_down,
-                            const vector<Blob<Dtype>*>& bottom);
-#ifdef USE_GREENTEA
-  virtual void Backward_gpu(const vector<Blob<Dtype>*>& top,
+                            const vector<Blob<MItype>*>& bottom);
+#ifdef USE_OPENCL
+  virtual void Backward_gpu(const vector<Blob<MOtype>*>& top,
                             const vector<bool>& propagate_down,
-                            const vector<Blob<Dtype>*>& bottom);
+                            const vector<Blob<MItype>*>& bottom);
 #endif
 
   virtual inline bool reverse_dimensions() { return false; }
   virtual void compute_output_shape();
 
   // Forward CPU
-  virtual void Forward_cpu_fft(const vector<Blob<Dtype>*>& bottom,
-      const vector<Blob<Dtype>*>& top);
+  virtual void Forward_cpu_fft(const vector<Blob<MItype>*>& bottom,
+      const vector<Blob<MOtype>*>& top);
   virtual void Forward_cpu_fft_task(const Dtype *bottom_data,
       int bottom_data_offset, Dtype* top_data, int top_data_offset, int n);
   virtual void fft_compute_weights();
   // Forward GPU
-#ifdef USE_GREENTEA
-  virtual void Forward_gpu_fft(const vector<Blob<Dtype>*>& bottom,
-      const vector<Blob<Dtype>*>& top);
+#ifdef USE_OPENCL
+  virtual void Forward_gpu_fft(const vector<Blob<MItype>*>& bottom,
+      const vector<Blob<MOtype>*>& top);
   virtual void Forward_gpu_fft_task(const Dtype *bottom_data,
       int bottom_data_offset, Dtype* top_data, int top_data_offset, int n,
       int ch_gr, int out_gr);
   virtual void fft_gpu_compute_weights();
 #endif
   // Backward CPU
-  virtual void Backward_cpu_fft_task(const vector<Blob<Dtype>*>& bottom,
-      const vector<Blob<Dtype>*>& top, const Dtype* weight, int i, int n);
+  virtual void Backward_cpu_fft_task(const vector<Blob<MItype>*>& bottom,
+      const vector<Blob<MOtype>*>& top, const Dtype* weight, int i, int n);
   // Backward GPU
-#ifdef USE_GREENTEA
-  virtual void Backward_gpu_fft_task(const vector<Blob<Dtype>*>& bottom,
-      const vector<Blob<Dtype>*>& top, const Dtype* weight, int i, int n,
+#ifdef USE_OPENCL
+  virtual void Backward_gpu_fft_task(const vector<Blob<MItype>*>& bottom,
+      const vector<Blob<MOtype>*>& top, const Dtype* weight, int i, int n,
       int ch_gr, int out_gr);
 #endif
 
   // fft setup function for CPU and GPU
-  virtual void fft_setup(const vector<Blob<Dtype>*>& bottom,
-    const vector<Blob<Dtype>*>& top);
+  virtual void fft_setup(const vector<Blob<MItype>*>& bottom,
+    const vector<Blob<MOtype>*>& top);
   virtual void fft_cpu_setup();
-#ifdef USE_GREENTEA
+#ifdef USE_OPENCL
   virtual void fft_gpu_setup();
 #endif
   virtual void fft_clean();
   virtual void fft_cpu_clean();
-#ifdef USE_GREENTEA
+#ifdef USE_OPENCL
   virtual void fft_gpu_clean();
 #endif
 
@@ -132,7 +132,7 @@ class ConvolutionLayerFFT : public BaseConvolutionLayer<Dtype> {
 
   // GPU buffers and handles
 #ifndef CPU_ONLY
-#ifdef USE_GREENTEA
+#ifdef USE_OPENCL
   // FFT data in Forward
   clfftPlanHandle fft_gpu_forward_many_handle_;
   void* fft_gpu_map_in_real_all_channels_;

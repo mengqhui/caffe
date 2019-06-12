@@ -6,9 +6,10 @@
 
 namespace caffe {
 
-template <typename Dtype>
-void EmbedLayer<Dtype>::LayerSetUp(const vector<Blob<Dtype>*>& bottom,
-      const vector<Blob<Dtype>*>& top) {
+template<typename Dtype, typename MItype, typename MOtype>
+void EmbedLayer<Dtype, MItype, MOtype>::LayerSetUp(
+                                      const vector<Blob<MItype>*>& bottom,
+                                      const vector<Blob<MOtype>*>& top) {
   N_ = this->layer_param_.embed_param().num_output();
   CHECK_GT(N_, 0) << "EmbedLayer num_output must be positive.";
   K_ = this->layer_param_.embed_param().input_dim();
@@ -43,11 +44,14 @@ void EmbedLayer<Dtype>::LayerSetUp(const vector<Blob<Dtype>*>& bottom,
     }
   }  // parameter initialization
   this->param_propagate_down_.resize(this->blobs_.size(), true);
+
+  this->InitializeQuantizers(bottom, top);
 }
 
-template <typename Dtype>
-void EmbedLayer<Dtype>::Reshape(const vector<Blob<Dtype>*>& bottom,
-      const vector<Blob<Dtype>*>& top) {
+template<typename Dtype, typename MItype, typename MOtype>
+void EmbedLayer<Dtype, MItype, MOtype>::Reshape(
+                                      const vector<Blob<MItype>*>& bottom,
+                                      const vector<Blob<MOtype>*>& top) {
   // Figure out the dimensions
   M_ = bottom[0]->count();
   vector<int_tp> top_shape = bottom[0]->shape();
@@ -59,11 +63,16 @@ void EmbedLayer<Dtype>::Reshape(const vector<Blob<Dtype>*>& bottom,
     bias_multiplier_.Reshape(bias_shape);
     caffe_set(M_, Dtype(1), bias_multiplier_.mutable_cpu_data());
   }
+
+  if (Caffe::mode() == Caffe::GPU && this->device_program_.get() == nullptr) {
+    this->GenerateProgram();
+  }
 }
 
-template <typename Dtype>
-void EmbedLayer<Dtype>::Forward_cpu(const vector<Blob<Dtype>*>& bottom,
-    const vector<Blob<Dtype>*>& top) {
+template<typename Dtype, typename MItype, typename MOtype>
+void EmbedLayer<Dtype, MItype, MOtype>::Forward_cpu(
+                                      const vector<Blob<MItype>*>& bottom,
+                                      const vector<Blob<MOtype>*>& top) {
   const Dtype* bottom_data = bottom[0]->cpu_data();
   const Dtype* weight = this->blobs_[0]->cpu_data();
   Dtype* top_data = top[0]->mutable_cpu_data();
@@ -73,18 +82,19 @@ void EmbedLayer<Dtype>::Forward_cpu(const vector<Blob<Dtype>*>& bottom,
     DCHECK_GE(index, 0);
     DCHECK_LT(index, K_);
     DCHECK_EQ(static_cast<Dtype>(index), bottom_data[n]) << "non-integer input";
-    caffe_cpu_copy(N_, weight + index * N_, top_data + n * N_);
+    caffe_copy(N_, weight + index * N_, top_data + n * N_);
   }
   if (bias_term_) {
     const Dtype* bias = this->blobs_[1]->cpu_data();
-    caffe_cpu_gemm<Dtype>(CblasNoTrans, CblasNoTrans, M_, N_, 1, Dtype(1),
+    caffe_gemm<Dtype>(CblasNoTrans, CblasNoTrans, M_, N_, 1, Dtype(1),
         bias_multiplier_.cpu_data(), bias, Dtype(1), top_data);
   }
 }
 
-template <typename Dtype>
-void EmbedLayer<Dtype>::Backward_cpu(const vector<Blob<Dtype>*>& top,
-    const vector<bool>& propagate_down, const vector<Blob<Dtype>*>& bottom) {
+template<typename Dtype, typename MItype, typename MOtype>
+void EmbedLayer<Dtype, MItype, MOtype>::Backward_cpu(
+    const vector<Blob<MOtype>*>& top, const vector<bool>& propagate_down,
+    const vector<Blob<MItype>*>& bottom) {
   CHECK(!propagate_down[0]) << "Can't backpropagate to EmbedLayer input.";
   if (this->param_propagate_down_[0]) {
     const Dtype* top_diff = top[0]->cpu_diff();
@@ -104,7 +114,7 @@ void EmbedLayer<Dtype>::Backward_cpu(const vector<Blob<Dtype>*>& top,
   if (bias_term_ && this->param_propagate_down_[1]) {
     const Dtype* top_diff = top[0]->cpu_diff();
     Dtype* bias_diff = this->blobs_[1]->mutable_cpu_diff();
-    caffe_cpu_gemv<Dtype>(CblasTrans, M_, N_, Dtype(1), top_diff,
+    caffe_gemv<Dtype>(CblasTrans, M_, N_, Dtype(1), top_diff,
         bias_multiplier_.cpu_data(), Dtype(1), bias_diff);
   }
 }
@@ -113,7 +123,13 @@ void EmbedLayer<Dtype>::Backward_cpu(const vector<Blob<Dtype>*>& top,
 STUB_GPU(EmbedLayer);
 #endif
 
-INSTANTIATE_CLASS(EmbedLayer);
+INSTANTIATE_CLASS_3T_GUARDED(EmbedLayer, (half_fp), (half_fp), (half_fp));
+INSTANTIATE_CLASS_3T_GUARDED(EmbedLayer, (float), (float), (float));
+INSTANTIATE_CLASS_3T_GUARDED(EmbedLayer, (double), (double), (double));
+
 REGISTER_LAYER_CLASS(Embed);
+REGISTER_LAYER_CLASS_INST(Embed, (half_fp), (half_fp), (half_fp));
+REGISTER_LAYER_CLASS_INST(Embed, (float), (float), (float));
+REGISTER_LAYER_CLASS_INST(Embed, (double), (double), (double));
 
 }  // namespace caffe

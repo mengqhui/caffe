@@ -70,14 +70,14 @@ class ScaleLayerTest : public MultiDeviceTest<TypeParam> {
   vector<Blob<Dtype>*> blob_top_vec_;
 };
 
-TYPED_TEST_CASE(ScaleLayerTest, TestDtypesAndDevices);
+TYPED_TEST_CASE(ScaleLayerTest, TestDtypesFloatAndDevices);
 
 TYPED_TEST(ScaleLayerTest, TestForwardEltwise) {
   typedef typename TypeParam::Dtype Dtype;
   this->blob_bottom_vec_.push_back(this->blob_bottom_eltwise_);
   LayerParameter layer_param;
   layer_param.mutable_scale_param()->set_axis(0);
-  shared_ptr<ScaleLayer<Dtype> > layer(new ScaleLayer<Dtype>(layer_param));
+  shared_ptr<ScaleLayer<Dtype, Dtype, Dtype> > layer(new ScaleLayer<Dtype, Dtype, Dtype>(layer_param));
   layer->SetUp(this->blob_bottom_vec_, this->blob_top_vec_);
   ASSERT_EQ(this->blob_bottom_->shape(), this->blob_top_->shape());
   layer->Forward(this->blob_bottom_vec_, this->blob_top_vec_);
@@ -85,8 +85,11 @@ TYPED_TEST(ScaleLayerTest, TestForwardEltwise) {
   const int_tp count = this->blob_top_->count();
   const Dtype* in_data_a = this->blob_bottom_->cpu_data();
   const Dtype* in_data_b = this->blob_bottom_eltwise_->cpu_data();
+  const Dtype delta = std::is_same<Dtype, half_fp>::value ?
+                      1e-3 : 1e-5;
   for (int_tp i = 0; i < count; ++i) {
-    EXPECT_NEAR(data[i], in_data_a[i] * in_data_b[i], 1e-5);
+    EXPECT_NEAR(data[i], in_data_a[i] * in_data_b[i],
+                delta * fabs(in_data_a[i] * in_data_b[i]));
   }
 }
 
@@ -98,15 +101,18 @@ TYPED_TEST(ScaleLayerTest, TestForwardEltwiseInPlace) {
   this->blob_bottom_vec_.push_back(this->blob_bottom_eltwise_);
   LayerParameter layer_param;
   layer_param.mutable_scale_param()->set_axis(0);
-  shared_ptr<ScaleLayer<Dtype> > layer(new ScaleLayer<Dtype>(layer_param));
+  shared_ptr<ScaleLayer<Dtype, Dtype, Dtype> > layer(new ScaleLayer<Dtype, Dtype, Dtype>(layer_param));
   layer->SetUp(this->blob_bottom_vec_, this->blob_top_vec_);
   layer->Forward(this->blob_bottom_vec_, this->blob_top_vec_);
   const Dtype* data = this->blob_bottom_->cpu_data();
   const int_tp count = this->blob_bottom_->count();
   const Dtype* in_data_a = orig_bottom.cpu_data();
   const Dtype* in_data_b = this->blob_bottom_eltwise_->cpu_data();
+  const Dtype delta = std::is_same<Dtype, half_fp>::value ?
+                      1e-3 : 1e-5;
   for (int_tp i = 0; i < count; ++i) {
-    EXPECT_NEAR(data[i], in_data_a[i] * in_data_b[i], 1e-5);
+    EXPECT_NEAR(data[i], in_data_a[i] * in_data_b[i],
+                delta * fabs(in_data_a[i] * in_data_b[i]));
   }
 }
 
@@ -117,7 +123,7 @@ TYPED_TEST(ScaleLayerTest, TestBackwardEltwiseInPlace) {
   this->blob_bottom_vec_.push_back(this->blob_bottom_eltwise_);
   LayerParameter layer_param;
   layer_param.mutable_scale_param()->set_axis(0);
-  shared_ptr<ScaleLayer<Dtype> > layer(new ScaleLayer<Dtype>(layer_param));
+  shared_ptr<ScaleLayer<Dtype, Dtype, Dtype> > layer(new ScaleLayer<Dtype, Dtype, Dtype>(layer_param));
   Blob<Dtype> top_diff(this->blob_bottom_->shape());
   FillerParameter filler_param;
   filler_param.set_type("gaussian");
@@ -146,13 +152,17 @@ TYPED_TEST(ScaleLayerTest, TestBackwardEltwiseInPlace) {
   caffe_copy(top_diff.count(), top_diff.cpu_data(),
              this->blob_bottom_->mutable_cpu_diff());
   layer->Backward(this->blob_top_vec_, propagate_down, this->blob_bottom_vec_);
+  const Dtype delta = std::is_same<Dtype, half_fp>::value ?
+                      1e-3 : 1e-5;
   for (int_tp i = 0; i < this->blob_bottom_->count(); ++i) {
     EXPECT_NEAR(orig_bottom_diff.cpu_diff()[i],
-                this->blob_bottom_->cpu_diff()[i], 1e-5);
+                this->blob_bottom_->cpu_diff()[i],
+                delta * fabs(orig_bottom_diff.cpu_diff()[i]));
   }
   for (int_tp i = 0; i < this->blob_bottom_eltwise_->count(); ++i) {
     EXPECT_NEAR(orig_scale_diff.cpu_diff()[i],
-                this->blob_bottom_eltwise_->cpu_diff()[i], 1e-5);
+                this->blob_bottom_eltwise_->cpu_diff()[i],
+                delta * fabs(orig_scale_diff.cpu_diff()[i]));
   }
 }
 
@@ -163,7 +173,7 @@ TYPED_TEST(ScaleLayerTest, TestForwardEltwiseWithParam) {
   scale_param->set_axis(0);
   scale_param->set_num_axes(-1);
   scale_param->mutable_filler()->set_type("gaussian");
-  shared_ptr<ScaleLayer<Dtype> > layer(new ScaleLayer<Dtype>(layer_param));
+  shared_ptr<ScaleLayer<Dtype, Dtype, Dtype> > layer(new ScaleLayer<Dtype, Dtype, Dtype>(layer_param));
   layer->SetUp(this->blob_bottom_vec_, this->blob_top_vec_);
   ASSERT_EQ(this->blob_bottom_->shape(), this->blob_top_->shape());
   layer->Forward(this->blob_bottom_vec_, this->blob_top_vec_);
@@ -171,8 +181,11 @@ TYPED_TEST(ScaleLayerTest, TestForwardEltwiseWithParam) {
   const int_tp count = this->blob_top_->count();
   const Dtype* in_data_a = this->blob_bottom_->cpu_data();
   const Dtype* in_data_b = layer->blobs()[0]->cpu_data();
+  const Dtype delta = std::is_same<Dtype, half_fp>::value ?
+                      1e-3 : 1e-5;
   for (int_tp i = 0; i < count; ++i) {
-    EXPECT_NEAR(data[i], in_data_a[i] * in_data_b[i], 1e-5);
+    EXPECT_NEAR(data[i], in_data_a[i] * in_data_b[i],
+                delta * fabs(in_data_a[i] * in_data_b[i]));
   }
 }
 
@@ -181,10 +194,12 @@ TYPED_TEST(ScaleLayerTest, TestForwardBroadcastBegin) {
   this->blob_bottom_vec_.push_back(this->blob_bottom_broadcast_0_);
   LayerParameter layer_param;
   layer_param.mutable_scale_param()->set_axis(0);
-  shared_ptr<ScaleLayer<Dtype> > layer(new ScaleLayer<Dtype>(layer_param));
+  shared_ptr<ScaleLayer<Dtype, Dtype, Dtype> > layer(new ScaleLayer<Dtype, Dtype, Dtype>(layer_param));
   layer->SetUp(this->blob_bottom_vec_, this->blob_top_vec_);
   ASSERT_EQ(this->blob_bottom_->shape(), this->blob_top_->shape());
   layer->Forward(this->blob_bottom_vec_, this->blob_top_vec_);
+  const Dtype delta = std::is_same<Dtype, half_fp>::value ?
+                      1e-2 : 1e-5;
   for (int_tp n = 0; n < this->blob_bottom_->num(); ++n) {
     for (int_tp c = 0; c < this->blob_bottom_->channels(); ++c) {
       for (int_tp h = 0; h < this->blob_bottom_->height(); ++h) {
@@ -192,7 +207,7 @@ TYPED_TEST(ScaleLayerTest, TestForwardBroadcastBegin) {
           EXPECT_NEAR(this->blob_top_->data_at(n, c, h, w),
                       this->blob_bottom_->data_at(n, c, h, w) *
                       this->blob_bottom_broadcast_0_->data_at(n, c, 0, 0),
-                      1e-5);
+                      delta * fabs(this->blob_top_->data_at(n, c, h, w)));
         }
       }
     }
@@ -204,10 +219,12 @@ TYPED_TEST(ScaleLayerTest, TestForwardBroadcastMiddle) {
   this->blob_bottom_vec_.push_back(this->blob_bottom_broadcast_1_);
   LayerParameter layer_param;
   layer_param.mutable_scale_param()->set_axis(1);
-  shared_ptr<ScaleLayer<Dtype> > layer(new ScaleLayer<Dtype>(layer_param));
+  shared_ptr<ScaleLayer<Dtype, Dtype, Dtype> > layer(new ScaleLayer<Dtype, Dtype, Dtype>(layer_param));
   layer->SetUp(this->blob_bottom_vec_, this->blob_top_vec_);
   ASSERT_EQ(this->blob_bottom_->shape(), this->blob_top_->shape());
   layer->Forward(this->blob_bottom_vec_, this->blob_top_vec_);
+  const Dtype delta = std::is_same<Dtype, half_fp>::value ?
+                      1e-3 : 1e-5;
   for (int_tp n = 0; n < this->blob_bottom_->num(); ++n) {
     for (int_tp c = 0; c < this->blob_bottom_->channels(); ++c) {
       for (int_tp h = 0; h < this->blob_bottom_->height(); ++h) {
@@ -215,7 +232,7 @@ TYPED_TEST(ScaleLayerTest, TestForwardBroadcastMiddle) {
           EXPECT_NEAR(this->blob_top_->data_at(n, c, h, w),
                       this->blob_bottom_->data_at(n, c, h, w) *
                       this->blob_bottom_broadcast_1_->data_at(c, h, 0, 0),
-                      1e-5);
+                      delta * fabs(this->blob_top_->data_at(n, c, h, w)));
         }
       }
     }
@@ -230,9 +247,11 @@ TYPED_TEST(ScaleLayerTest, TestForwardBroadcastMiddleInPlace) {
   this->blob_bottom_vec_.push_back(this->blob_bottom_broadcast_1_);
   LayerParameter layer_param;
   layer_param.mutable_scale_param()->set_axis(1);
-  shared_ptr<ScaleLayer<Dtype> > layer(new ScaleLayer<Dtype>(layer_param));
+  shared_ptr<ScaleLayer<Dtype, Dtype, Dtype> > layer(new ScaleLayer<Dtype, Dtype, Dtype>(layer_param));
   layer->SetUp(this->blob_bottom_vec_, this->blob_top_vec_);
   layer->Forward(this->blob_bottom_vec_, this->blob_top_vec_);
+  const Dtype delta = std::is_same<Dtype, half_fp>::value ?
+                      1e-3 : 1e-5;
   for (int_tp n = 0; n < this->blob_bottom_->num(); ++n) {
     for (int_tp c = 0; c < this->blob_bottom_->channels(); ++c) {
       for (int_tp h = 0; h < this->blob_bottom_->height(); ++h) {
@@ -240,7 +259,7 @@ TYPED_TEST(ScaleLayerTest, TestForwardBroadcastMiddleInPlace) {
           EXPECT_NEAR(this->blob_bottom_->data_at(n, c, h, w),
                       orig_bottom.data_at(n, c, h, w) *
                       this->blob_bottom_broadcast_1_->data_at(c, h, 0, 0),
-                      1e-5);
+                      delta * fabs(this->blob_bottom_->data_at(n, c, h, w)));
         }
       }
     }
@@ -254,7 +273,7 @@ TYPED_TEST(ScaleLayerTest, TestBackwardBroadcastMiddleInPlace) {
   this->blob_bottom_vec_.push_back(this->blob_bottom_broadcast_1_);
   LayerParameter layer_param;
   layer_param.mutable_scale_param()->set_axis(1);
-  shared_ptr<ScaleLayer<Dtype> > layer(new ScaleLayer<Dtype>(layer_param));
+  shared_ptr<ScaleLayer<Dtype, Dtype, Dtype> > layer(new ScaleLayer<Dtype, Dtype, Dtype>(layer_param));
   Blob<Dtype> top_diff(this->blob_bottom_->shape());
   FillerParameter filler_param;
   filler_param.set_type("gaussian");
@@ -283,13 +302,15 @@ TYPED_TEST(ScaleLayerTest, TestBackwardBroadcastMiddleInPlace) {
   caffe_copy(top_diff.count(), top_diff.cpu_data(),
              this->blob_bottom_->mutable_cpu_diff());
   layer->Backward(this->blob_top_vec_, propagate_down, this->blob_bottom_vec_);
+  const Dtype delta = std::is_same<Dtype, half_fp>::value ?
+                      1e-3 : 1e-5;
   for (int_tp i = 0; i < this->blob_bottom_->count(); ++i) {
     EXPECT_NEAR(orig_bottom_diff.cpu_diff()[i],
-                this->blob_bottom_->cpu_diff()[i], 1e-5);
+                this->blob_bottom_->cpu_diff()[i], delta);
   }
   for (int_tp i = 0; i < this->blob_bottom_broadcast_1_->count(); ++i) {
     EXPECT_NEAR(orig_scale_diff.cpu_diff()[i],
-                this->blob_bottom_broadcast_1_->cpu_diff()[i], 1e-5);
+                this->blob_bottom_broadcast_1_->cpu_diff()[i], delta);
   }
 }
 
@@ -300,17 +321,20 @@ TYPED_TEST(ScaleLayerTest, TestForwardBroadcastMiddleWithParam) {
   scale_param->set_axis(1);
   scale_param->set_num_axes(2);
   scale_param->mutable_filler()->set_type("gaussian");
-  shared_ptr<ScaleLayer<Dtype> > layer(new ScaleLayer<Dtype>(layer_param));
+  shared_ptr<ScaleLayer<Dtype, Dtype, Dtype> > layer(new ScaleLayer<Dtype, Dtype, Dtype>(layer_param));
   layer->SetUp(this->blob_bottom_vec_, this->blob_top_vec_);
   ASSERT_EQ(this->blob_bottom_->shape(), this->blob_top_->shape());
   layer->Forward(this->blob_bottom_vec_, this->blob_top_vec_);
+  const Dtype delta = std::is_same<Dtype, half_fp>::value ?
+                      1e-3 : 1e-5;
   for (int_tp n = 0; n < this->blob_bottom_->num(); ++n) {
     for (int_tp c = 0; c < this->blob_bottom_->channels(); ++c) {
       for (int_tp h = 0; h < this->blob_bottom_->height(); ++h) {
         for (int_tp w = 0; w < this->blob_bottom_->width(); ++w) {
           EXPECT_NEAR(this->blob_top_->data_at(n, c, h, w),
                       this->blob_bottom_->data_at(n, c, h, w) *
-                      layer->blobs()[0]->data_at(c, h, 0, 0), 1e-5);
+                      layer->blobs()[0]->data_at(c, h, 0, 0),
+                      delta * fabs(this->blob_top_->data_at(n, c, h, w)));
         }
       }
     }
@@ -326,10 +350,12 @@ TYPED_TEST(ScaleLayerTest, TestForwardBroadcastMiddleWithParamAndBias) {
   scale_param->mutable_filler()->set_type("gaussian");
   scale_param->set_bias_term(true);
   scale_param->mutable_bias_filler()->set_type("gaussian");
-  shared_ptr<ScaleLayer<Dtype> > layer(new ScaleLayer<Dtype>(layer_param));
+  shared_ptr<ScaleLayer<Dtype, Dtype, Dtype> > layer(new ScaleLayer<Dtype, Dtype, Dtype>(layer_param));
   layer->SetUp(this->blob_bottom_vec_, this->blob_top_vec_);
   ASSERT_EQ(this->blob_bottom_->shape(), this->blob_top_->shape());
   layer->Forward(this->blob_bottom_vec_, this->blob_top_vec_);
+  const Dtype delta = std::is_same<Dtype, half_fp>::value ?
+                      5e-2 : 1e-5;
   for (int_tp n = 0; n < this->blob_bottom_->num(); ++n) {
     for (int_tp c = 0; c < this->blob_bottom_->channels(); ++c) {
       for (int_tp h = 0; h < this->blob_bottom_->height(); ++h) {
@@ -337,7 +363,8 @@ TYPED_TEST(ScaleLayerTest, TestForwardBroadcastMiddleWithParamAndBias) {
           EXPECT_NEAR(this->blob_top_->data_at(n, c, h, w),
                       this->blob_bottom_->data_at(n, c, h, w) *
                       layer->blobs()[0]->data_at(c, h, 0, 0) +
-                      layer->blobs()[1]->data_at(c, h, 0, 0), 1e-5);
+                      layer->blobs()[1]->data_at(c, h, 0, 0),
+                      delta * fabs(this->blob_top_->data_at(n, c, h, w)));
         }
       }
     }
@@ -349,10 +376,12 @@ TYPED_TEST(ScaleLayerTest, TestForwardBroadcastEnd) {
   this->blob_bottom_vec_.push_back(this->blob_bottom_broadcast_2_);
   LayerParameter layer_param;
   layer_param.mutable_scale_param()->set_axis(2);
-  shared_ptr<ScaleLayer<Dtype> > layer(new ScaleLayer<Dtype>(layer_param));
+  shared_ptr<ScaleLayer<Dtype, Dtype, Dtype> > layer(new ScaleLayer<Dtype, Dtype, Dtype>(layer_param));
   layer->SetUp(this->blob_bottom_vec_, this->blob_top_vec_);
   ASSERT_EQ(this->blob_bottom_->shape(), this->blob_top_->shape());
   layer->Forward(this->blob_bottom_vec_, this->blob_top_vec_);
+  const Dtype delta = std::is_same<Dtype, half_fp>::value ?
+                      1e-3 : 1e-5;
   for (int_tp n = 0; n < this->blob_bottom_->num(); ++n) {
     for (int_tp c = 0; c < this->blob_bottom_->channels(); ++c) {
       for (int_tp h = 0; h < this->blob_bottom_->height(); ++h) {
@@ -360,7 +389,7 @@ TYPED_TEST(ScaleLayerTest, TestForwardBroadcastEnd) {
           EXPECT_NEAR(this->blob_top_->data_at(n, c, h, w),
                       this->blob_bottom_->data_at(n, c, h, w) *
                       this->blob_bottom_broadcast_2_->data_at(h, w, 0, 0),
-                      1e-5);
+                      delta * fabs(this->blob_top_->data_at(n, c, h, w)));
         }
       }
     }
@@ -371,7 +400,7 @@ TYPED_TEST(ScaleLayerTest, TestForwardScale) {
   typedef typename TypeParam::Dtype Dtype;
   this->blob_bottom_vec_.push_back(this->blob_bottom_scale_);
   LayerParameter layer_param;
-  shared_ptr<ScaleLayer<Dtype> > layer(new ScaleLayer<Dtype>(layer_param));
+  shared_ptr<ScaleLayer<Dtype, Dtype, Dtype> > layer(new ScaleLayer<Dtype, Dtype, Dtype>(layer_param));
   layer->SetUp(this->blob_bottom_vec_, this->blob_top_vec_);
   ASSERT_EQ(this->blob_bottom_->shape(), this->blob_top_->shape());
   layer->Forward(this->blob_bottom_vec_, this->blob_top_vec_);
@@ -379,8 +408,10 @@ TYPED_TEST(ScaleLayerTest, TestForwardScale) {
   const int_tp count = this->blob_top_->count();
   const Dtype* in_data = this->blob_bottom_->cpu_data();
   const Dtype scale = *this->blob_bottom_scale_->cpu_data();
+  const Dtype delta = std::is_same<Dtype, half_fp>::value ?
+                      1e-3 : 1e-5;
   for (int_tp i = 0; i < count; ++i) {
-    EXPECT_NEAR(data[i], in_data[i] * scale, 1e-5);
+    EXPECT_NEAR(data[i], in_data[i] * scale, delta * fabs(data[i]));
   }
 }
 
@@ -389,7 +420,7 @@ TYPED_TEST(ScaleLayerTest, TestForwardScaleAxis2) {
   this->blob_bottom_vec_.push_back(this->blob_bottom_scale_);
   LayerParameter layer_param;
   layer_param.mutable_scale_param()->set_axis(2);
-  shared_ptr<ScaleLayer<Dtype> > layer(new ScaleLayer<Dtype>(layer_param));
+  shared_ptr<ScaleLayer<Dtype, Dtype, Dtype> > layer(new ScaleLayer<Dtype, Dtype, Dtype>(layer_param));
   layer->SetUp(this->blob_bottom_vec_, this->blob_top_vec_);
   ASSERT_EQ(this->blob_bottom_->shape(), this->blob_top_->shape());
   layer->Forward(this->blob_bottom_vec_, this->blob_top_vec_);
@@ -397,8 +428,10 @@ TYPED_TEST(ScaleLayerTest, TestForwardScaleAxis2) {
   const int_tp count = this->blob_top_->count();
   const Dtype* in_data = this->blob_bottom_->cpu_data();
   const Dtype scale = *this->blob_bottom_scale_->cpu_data();
+  const Dtype delta = std::is_same<Dtype, half_fp>::value ?
+                      1e-3 : 1e-5;
   for (int_tp i = 0; i < count; ++i) {
-    EXPECT_NEAR(data[i], in_data[i] * scale, 1e-5);
+    EXPECT_NEAR(data[i], in_data[i] * scale, delta * fabs(data[i]));
   }
 }
 
@@ -407,7 +440,7 @@ TYPED_TEST(ScaleLayerTest, TestGradientEltwise) {
   this->blob_bottom_vec_.push_back(this->blob_bottom_eltwise_);
   LayerParameter layer_param;
   layer_param.mutable_scale_param()->set_axis(0);
-  ScaleLayer<Dtype> layer(layer_param);
+  ScaleLayer<Dtype, Dtype, Dtype> layer(layer_param);
   GradientChecker<Dtype> checker(1e-2, 1e-3);
   checker.CheckGradientEltwise(&layer, this->blob_bottom_vec_,
       this->blob_top_vec_);
@@ -420,7 +453,7 @@ TYPED_TEST(ScaleLayerTest, TestGradientEltwiseWithParam) {
   scale_param->set_axis(0);
   scale_param->set_num_axes(-1);
   scale_param->mutable_filler()->set_type("gaussian");
-  ScaleLayer<Dtype> layer(layer_param);
+  ScaleLayer<Dtype, Dtype, Dtype> layer(layer_param);
   GradientChecker<Dtype> checker(1e-2, 1e-3);
   checker.CheckGradientExhaustive(&layer, this->blob_bottom_vec_,
       this->blob_top_vec_);
@@ -431,7 +464,7 @@ TYPED_TEST(ScaleLayerTest, TestGradientBroadcastBegin) {
   this->blob_bottom_vec_.push_back(this->blob_bottom_broadcast_0_);
   LayerParameter layer_param;
   layer_param.mutable_scale_param()->set_axis(0);
-  ScaleLayer<Dtype> layer(layer_param);
+  ScaleLayer<Dtype, Dtype, Dtype> layer(layer_param);
   GradientChecker<Dtype> checker(1e-2, 1e-3);
   checker.CheckGradientExhaustive(&layer, this->blob_bottom_vec_,
       this->blob_top_vec_);
@@ -442,7 +475,7 @@ TYPED_TEST(ScaleLayerTest, TestGradientBroadcastMiddle) {
   this->blob_bottom_vec_.push_back(this->blob_bottom_broadcast_1_);
   LayerParameter layer_param;
   layer_param.mutable_scale_param()->set_axis(1);
-  ScaleLayer<Dtype> layer(layer_param);
+  ScaleLayer<Dtype, Dtype, Dtype> layer(layer_param);
   GradientChecker<Dtype> checker(1e-2, 1e-3);
   checker.CheckGradientExhaustive(&layer, this->blob_bottom_vec_,
       this->blob_top_vec_);
@@ -456,7 +489,7 @@ TYPED_TEST(ScaleLayerTest, TestGradientBroadcastMiddleWithParam) {
   scale_param->set_axis(1);
   scale_param->set_num_axes(2);
   scale_param->mutable_filler()->set_type("gaussian");
-  ScaleLayer<Dtype> layer(layer_param);
+  ScaleLayer<Dtype, Dtype, Dtype> layer(layer_param);
   GradientChecker<Dtype> checker(1e-2, 1e-3);
   checker.CheckGradientExhaustive(&layer, this->blob_bottom_vec_,
       this->blob_top_vec_);
@@ -467,7 +500,7 @@ TYPED_TEST(ScaleLayerTest, TestGradientBroadcastEnd) {
   this->blob_bottom_vec_.push_back(this->blob_bottom_broadcast_2_);
   LayerParameter layer_param;
   layer_param.mutable_scale_param()->set_axis(2);
-  ScaleLayer<Dtype> layer(layer_param);
+  ScaleLayer<Dtype, Dtype, Dtype> layer(layer_param);
   GradientChecker<Dtype> checker(1e-2, 1e-3);
   checker.CheckGradientExhaustive(&layer, this->blob_bottom_vec_,
       this->blob_top_vec_);
@@ -477,7 +510,7 @@ TYPED_TEST(ScaleLayerTest, TestGradientScale) {
   typedef typename TypeParam::Dtype Dtype;
   this->blob_bottom_vec_.push_back(this->blob_bottom_scale_);
   LayerParameter layer_param;
-  ScaleLayer<Dtype> layer(layer_param);
+  ScaleLayer<Dtype, Dtype, Dtype> layer(layer_param);
   GradientChecker<Dtype> checker(1e-2, 1e-3);
   checker.CheckGradientExhaustive(&layer, this->blob_bottom_vec_,
       this->blob_top_vec_);
@@ -490,7 +523,7 @@ TYPED_TEST(ScaleLayerTest, TestGradientScaleAndBias) {
   ScaleParameter* scale_param = layer_param.mutable_scale_param();
   scale_param->set_bias_term(true);
   scale_param->mutable_bias_filler()->set_type("gaussian");
-  ScaleLayer<Dtype> layer(layer_param);
+  ScaleLayer<Dtype, Dtype, Dtype> layer(layer_param);
   GradientChecker<Dtype> checker(1e-2, 1e-3);
   checker.CheckGradientExhaustive(&layer, this->blob_bottom_vec_,
       this->blob_top_vec_);
@@ -501,7 +534,7 @@ TYPED_TEST(ScaleLayerTest, TestGradientScaleAxis2) {
   this->blob_bottom_vec_.push_back(this->blob_bottom_scale_);
   LayerParameter layer_param;
   layer_param.mutable_scale_param()->set_axis(2);
-  ScaleLayer<Dtype> layer(layer_param);
+  ScaleLayer<Dtype, Dtype, Dtype> layer(layer_param);
   GradientChecker<Dtype> checker(1e-2, 1e-3);
   checker.CheckGradientExhaustive(&layer, this->blob_bottom_vec_,
       this->blob_top_vec_);

@@ -5,9 +5,10 @@
 
 namespace caffe {
 
-template<typename Dtype>
-void LRNLayer<Dtype>::LayerSetUp(const vector<Blob<Dtype>*>& bottom,
-                                 const vector<Blob<Dtype>*>& top) {
+template<typename Dtype, typename MItype, typename MOtype>
+void LRNLayer<Dtype, MItype, MOtype>::LayerSetUp(
+                                    const vector<Blob<MItype>*>& bottom,
+                                    const vector<Blob<MOtype>*>& top) {
   size_ = this->layer_param_.lrn_param().local_size();
   CHECK_EQ(size_ % 2, 1)<< "LRN only supports odd values for local_size";
   pre_pad_ = (size_ - 1) / 2;
@@ -21,7 +22,7 @@ void LRNLayer<Dtype>::LayerSetUp(const vector<Blob<Dtype>*>& bottom,
     split_top_vec_.push_back(&product_input_);
     split_top_vec_.push_back(&square_input_);
     LayerParameter split_param;
-    split_layer_.reset(new SplitLayer<Dtype>(split_param));
+    split_layer_.reset(new SplitLayer<Dtype, MItype, MOtype>(split_param));
     split_layer_->SetUp(bottom, split_top_vec_);
     // Set up square_layer_ to square the inputs.
     square_bottom_vec_.clear();
@@ -30,7 +31,7 @@ void LRNLayer<Dtype>::LayerSetUp(const vector<Blob<Dtype>*>& bottom,
     square_top_vec_.push_back(&square_output_);
     LayerParameter square_param;
     square_param.mutable_power_param()->set_power(Dtype(2));
-    square_layer_.reset(new PowerLayer<Dtype>(square_param));
+    square_layer_.reset(new PowerLayer<Dtype, MItype, MOtype>(square_param));
     square_layer_->SetUp(square_bottom_vec_, square_top_vec_);
     // Set up pool_layer_ to sum over square neighborhoods of the input.
     pool_top_vec_.clear();
@@ -40,9 +41,9 @@ void LRNLayer<Dtype>::LayerSetUp(const vector<Blob<Dtype>*>& bottom,
         PoolingParameter_PoolMethod_AVE);
     pool_param.mutable_pooling_param()->add_pad(pre_pad_);
     pool_param.mutable_pooling_param()->add_kernel_size(size_);
-    pool_layer_.reset(new PoolingLayer<Dtype>(pool_param));
+    pool_layer_.reset(new PoolingLayer<Dtype, MItype, MOtype>(pool_param));
     pool_layer_->SetUp(square_top_vec_, pool_top_vec_);
-    // Set up power_layer_ to compute (1 + alpha_/N^2 s)^-beta_, where s is
+    // Set up power_layer_ to compute (1 + alpha_/n^2 s)^-beta_, where s is
     // the sum of a squared neighborhood (the output of pool_layer_).
     power_top_vec_.clear();
     power_top_vec_.push_back(&power_output_);
@@ -50,7 +51,7 @@ void LRNLayer<Dtype>::LayerSetUp(const vector<Blob<Dtype>*>& bottom,
     power_param.mutable_power_param()->set_power(-beta_);
     power_param.mutable_power_param()->set_scale(alpha_);
     power_param.mutable_power_param()->set_shift(Dtype(1));
-    power_layer_.reset(new PowerLayer<Dtype>(power_param));
+    power_layer_.reset(new PowerLayer<Dtype, MItype, MOtype>(power_param));
     power_layer_->SetUp(pool_top_vec_, power_top_vec_);
     // Set up a product_layer_ to compute outputs by multiplying inputs by the
     // inverse demoninator computed by the power layer.
@@ -60,14 +61,16 @@ void LRNLayer<Dtype>::LayerSetUp(const vector<Blob<Dtype>*>& bottom,
     LayerParameter product_param;
     EltwiseParameter* eltwise_param = product_param.mutable_eltwise_param();
     eltwise_param->set_operation(EltwiseParameter_EltwiseOp_PROD);
-    product_layer_.reset(new EltwiseLayer<Dtype>(product_param));
+    product_layer_.reset(new EltwiseLayer<Dtype, MItype, MOtype>(product_param));
     product_layer_->SetUp(product_bottom_vec_, top);
   }
+  this->InitializeQuantizers(bottom, top);
 }
 
-template<typename Dtype>
-void LRNLayer<Dtype>::Reshape(const vector<Blob<Dtype>*>& bottom,
-                              const vector<Blob<Dtype>*>& top) {
+template<typename Dtype, typename MItype, typename MOtype>
+void LRNLayer<Dtype, MItype, MOtype>::Reshape(
+                                    const vector<Blob<MItype>*>& bottom,
+                                    const vector<Blob<MOtype>*>& top) {
   CHECK_EQ(4, bottom[0]->num_axes())<< "Input must have 4 axes, "
   << "corresponding to (num, channels, height, width)";
   num_ = bottom[0]->num();
@@ -76,22 +79,27 @@ void LRNLayer<Dtype>::Reshape(const vector<Blob<Dtype>*>& bottom,
   width_ = bottom[0]->width();
   switch (this->layer_param_.lrn_param().norm_region()) {
     case LRNParameter_NormRegion_ACROSS_CHANNELS:
-    top[0]->Reshape(num_, channels_, height_, width_);
-    scale_.Reshape(num_, channels_, height_, width_);
+      top[0]->Reshape(num_, channels_, height_, width_);
+      scale_.Reshape(num_, channels_, height_, width_);
     break;
     case LRNParameter_NormRegion_WITHIN_CHANNEL:
-    split_layer_->Reshape(bottom, split_top_vec_);
-    square_layer_->Reshape(square_bottom_vec_, square_top_vec_);
-    pool_layer_->Reshape(square_top_vec_, pool_top_vec_);
-    power_layer_->Reshape(pool_top_vec_, power_top_vec_);
-    product_layer_->Reshape(product_bottom_vec_, top);
+      split_layer_->Reshape(bottom, split_top_vec_);
+      square_layer_->Reshape(square_bottom_vec_, square_top_vec_);
+      pool_layer_->Reshape(square_top_vec_, pool_top_vec_);
+      power_layer_->Reshape(pool_top_vec_, power_top_vec_);
+      product_layer_->Reshape(product_bottom_vec_, top);
     break;
+  }
+
+  if (Caffe::mode() == Caffe::GPU && this->device_program_.get() == nullptr) {
+    this->GenerateProgram();
   }
 }
 
-template<typename Dtype>
-void LRNLayer<Dtype>::Forward_cpu(const vector<Blob<Dtype>*>& bottom,
-                                  const vector<Blob<Dtype>*>& top) {
+template<typename Dtype, typename MItype, typename MOtype>
+void LRNLayer<Dtype, MItype, MOtype>::Forward_cpu(
+                                    const vector<Blob<MItype>*>& bottom,
+                                    const vector<Blob<MOtype>*>& top) {
   switch (this->layer_param_.lrn_param().norm_region()) {
     case LRNParameter_NormRegion_ACROSS_CHANNELS:
       CrossChannelForward_cpu(bottom, top);
@@ -104,9 +112,10 @@ void LRNLayer<Dtype>::Forward_cpu(const vector<Blob<Dtype>*>& bottom,
     }
   }
 
-template<typename Dtype>
-void LRNLayer<Dtype>::CrossChannelForward_cpu(
-    const vector<Blob<Dtype>*>& bottom, const vector<Blob<Dtype>*>& top) {
+template<typename Dtype, typename MItype, typename MOtype>
+void LRNLayer<Dtype, MItype, MOtype>::CrossChannelForward_cpu(
+                                    const vector<Blob<MItype>*>& bottom,
+                                    const vector<Blob<MOtype>*>& top) {
   const Dtype* bottom_data = bottom[0]->cpu_data();
   Dtype* top_data = top[0]->mutable_cpu_data();
   Dtype* scale_data = scale_.mutable_cpu_data();
@@ -132,7 +141,7 @@ void LRNLayer<Dtype>::CrossChannelForward_cpu(
     }
     for (int_tp c = 1; c < channels_; ++c) {
       // copy previous scale
-      caffe_cpu_copy<Dtype>(height_ * width_,
+      caffe_copy<Dtype>(height_ * width_,
                         scale_data + scale_.offset(n, c - 1),
                         scale_data + scale_.offset(n, c));
       // add head
@@ -152,9 +161,10 @@ void LRNLayer<Dtype>::CrossChannelForward_cpu(
   caffe_mul<Dtype>(scale_.count(), top_data, bottom_data, top_data);
 }
 
-template<typename Dtype>
-void LRNLayer<Dtype>::WithinChannelForward(const vector<Blob<Dtype>*>& bottom,
-                                           const vector<Blob<Dtype>*>& top) {
+template<typename Dtype, typename MItype, typename MOtype>
+void LRNLayer<Dtype, MItype, MOtype>::WithinChannelForward(
+                                    const vector<Blob<MItype>*>& bottom,
+                                    const vector<Blob<MOtype>*>& top) {
   split_layer_->Forward(bottom, split_top_vec_);
   square_layer_->Forward(square_bottom_vec_, square_top_vec_);
   pool_layer_->Forward(square_top_vec_, pool_top_vec_);
@@ -162,10 +172,11 @@ void LRNLayer<Dtype>::WithinChannelForward(const vector<Blob<Dtype>*>& bottom,
   product_layer_->Forward(product_bottom_vec_, top);
 }
 
-template<typename Dtype>
-void LRNLayer<Dtype>::Backward_cpu(const vector<Blob<Dtype>*>& top,
-                                   const vector<bool>& propagate_down,
-                                   const vector<Blob<Dtype>*>& bottom) {
+template<typename Dtype, typename MItype, typename MOtype>
+void LRNLayer<Dtype, MItype, MOtype>::Backward_cpu(
+                                    const vector<Blob<MOtype>*>& top,
+                                    const vector<bool>& propagate_down,
+                                    const vector<Blob<MItype>*>& bottom) {
   switch (this->layer_param_.lrn_param().norm_region()) {
     case LRNParameter_NormRegion_ACROSS_CHANNELS:
       CrossChannelBackward_cpu(top, propagate_down, bottom);
@@ -178,10 +189,11 @@ void LRNLayer<Dtype>::Backward_cpu(const vector<Blob<Dtype>*>& top,
     }
   }
 
-template<typename Dtype>
-void LRNLayer<Dtype>::CrossChannelBackward_cpu(
-    const vector<Blob<Dtype>*>& top, const vector<bool>& propagate_down,
-    const vector<Blob<Dtype>*>& bottom) {
+template<typename Dtype, typename MItype, typename MOtype>
+void LRNLayer<Dtype, MItype, MOtype>::CrossChannelBackward_cpu(
+                                    const vector<Blob<MOtype>*>& top,
+                                    const vector<bool>& propagate_down,
+                                    const vector<Blob<MItype>*>& bottom) {
   const Dtype* top_diff = top[0]->cpu_diff();
   const Dtype* top_data = top[0]->cpu_data();
   const Dtype* bottom_data = bottom[0]->cpu_data();
@@ -239,10 +251,10 @@ void LRNLayer<Dtype>::CrossChannelBackward_cpu(
   }
 }
 
-template<typename Dtype>
-void LRNLayer<Dtype>::WithinChannelBackward(
-    const vector<Blob<Dtype>*>& top, const vector<bool>& propagate_down,
-    const vector<Blob<Dtype>*>& bottom) {
+template<typename Dtype, typename MItype, typename MOtype>
+void LRNLayer<Dtype, MItype, MOtype>::WithinChannelBackward(
+    const vector<Blob<MOtype>*>& top, const vector<bool>& propagate_down,
+    const vector<Blob<MItype>*>& bottom) {
   if (propagate_down[0]) {
     vector<bool> product_propagate_down(2, true);
     product_layer_->Backward(top, product_propagate_down, product_bottom_vec_);
@@ -260,6 +272,11 @@ STUB_GPU_FORWARD(LRNLayer, CrossChannelForward);
 STUB_GPU_BACKWARD(LRNLayer, CrossChannelBackward);
 #endif
 
-INSTANTIATE_CLASS(LRNLayer);
+INSTANTIATE_CLASS_3T_GUARDED(LRNLayer, (half_fp), (half_fp), (half_fp));
+INSTANTIATE_CLASS_3T_GUARDED(LRNLayer, (float), (float), (float));
+INSTANTIATE_CLASS_3T_GUARDED(LRNLayer, (double), (double), (double));
+
+REGISTER_LAYER_CLASS(LRN);
+REGISTER_LAYER_CLASS_INST(LRN, (half_fp), (half_fp), (half_fp));
 
 }  // namespace caffe

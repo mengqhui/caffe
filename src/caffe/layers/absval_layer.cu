@@ -3,59 +3,47 @@
 #include "caffe/layers/absval_layer.hpp"
 #include "caffe/util/math_functions.hpp"
 
-#ifdef USE_GREENTEA
-#include "caffe/greentea/greentea.hpp"
-#include "caffe/greentea/greentea_math_functions.hpp"
-#endif
-
 namespace caffe {
 
-template<typename Dtype>
-void AbsValLayer<Dtype>::Forward_gpu(const vector<Blob<Dtype>*>& bottom,
-                                     const vector<Blob<Dtype>*>& top) {
+template<typename Dtype, typename MItype, typename MOtype>
+void AbsValLayer<Dtype, MItype, MOtype>::Forward_gpu(
+    const vector<Blob<MItype>*>& bottom,
+    const vector<Blob<MOtype>*>& top) {
   const int_tp count = top[0]->count();
-  Dtype* top_data = top[0]->mutable_gpu_data();
-  if (this->device_->backend() == BACKEND_CUDA) {
-#ifdef USE_CUDA
-    caffe_gpu_abs(count, bottom[0]->gpu_data(), top_data);
-#endif  // USE_CUDA
-  } else {
-#ifdef USE_GREENTEA
-    greentea_gpu_abs<Dtype>(this->device_->id(), count,
-                            (cl_mem) (bottom[0]->gpu_data()), 0,
-                            (cl_mem) (top_data), 0);
-#endif  // USE_GREENTEA
-  }
+  this->device_->template abs<Dtype>(count, bottom[0]->gpu_data(),
+                                     top[0]->mutable_gpu_data());
 }
 
-template<typename Dtype>
-void AbsValLayer<Dtype>::Backward_gpu(const vector<Blob<Dtype>*>& top,
-                                      const vector<bool>& propagate_down,
-                                      const vector<Blob<Dtype>*>& bottom) {
+template<typename Dtype, typename MItype, typename MOtype>
+void AbsValLayer<Dtype, MItype, MOtype>::Backward_gpu(
+                            const vector<Blob<MOtype>*>& top,
+                            const vector<bool>& propagate_down,
+                            const vector<Blob<MItype>*>& bottom) {
   const int_tp count = top[0]->count();
-  const Dtype* top_diff = top[0]->gpu_diff();
+  vptr<const MOtype> top_diff = top[0]->gpu_diff();
   if (propagate_down[0]) {
-    const Dtype* bottom_data = bottom[0]->gpu_data();
-    Dtype* bottom_diff = bottom[0]->mutable_gpu_diff();
+    vptr<const MItype> bottom_data = bottom[0]->gpu_data();
+    vptr<MItype> bottom_diff = bottom[0]->mutable_gpu_diff();
 
-    if (this->device_->backend() == BACKEND_CUDA) {
-#ifdef USE_CUDA
-      caffe_gpu_sign(count, bottom_data, bottom_diff);
-      caffe_gpu_mul(count, bottom_diff, top_diff, bottom_diff);
-#endif  // USE_CUDA
-    } else {
-#ifdef USE_GREENTEA
-      greentea_gpu_sign<Dtype>(this->device_->id(), count,
-                               (cl_mem) bottom_data, 0, (cl_mem) bottom_diff,
-                               0);
-      greentea_gpu_mul<Dtype>(this->device_->id(), count,
-                              (cl_mem) bottom_diff, 0, (cl_mem) top_diff, 0,
-                              (cl_mem) bottom_diff, 0);
-#endif  // USE_GREENTEA
-    }
+    this->device_->template sign<Dtype>(count, bottom_data, bottom_diff);
+    this->device_->template mul<Dtype>(count, bottom_diff, top_diff,
+                                       bottom_diff);
   }
 }
 
-INSTANTIATE_LAYER_GPU_FUNCS(AbsValLayer);
+INSTANTIATE_CLASST_FUNC_3T_GUARDED(AbsValLayer, Forward_gpu,
+                                  (half_fp), (half_fp), (half_fp));
+INSTANTIATE_CLASST_FUNC_3T_GUARDED(AbsValLayer, Forward_gpu,
+                                  (float), (float), (float));
+INSTANTIATE_CLASST_FUNC_3T_GUARDED(AbsValLayer, Forward_gpu,
+                                  (double), (double), (double));
+
+INSTANTIATE_CLASST_FUNC_3T_GUARDED(AbsValLayer, Backward_gpu,
+                                  (half_fp), (half_fp), (half_fp));
+INSTANTIATE_CLASST_FUNC_3T_GUARDED(AbsValLayer, Backward_gpu,
+                                  (float), (float), (float));
+INSTANTIATE_CLASST_FUNC_3T_GUARDED(AbsValLayer, Backward_gpu,
+                                  (double), (double), (double));
+
 
 }  // namespace caffe

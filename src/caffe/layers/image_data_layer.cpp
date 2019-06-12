@@ -17,14 +17,16 @@
 
 namespace caffe {
 
-template <typename Dtype>
-ImageDataLayer<Dtype>::~ImageDataLayer<Dtype>() {
+template<typename Dtype, typename MItype, typename MOtype>
+ImageDataLayer<Dtype, MItype, MOtype>::
+    ~ImageDataLayer<Dtype, MItype, MOtype>() {
   this->StopInternalThread();
 }
 
-template <typename Dtype>
-void ImageDataLayer<Dtype>::DataLayerSetUp(const vector<Blob<Dtype>*>& bottom,
-      const vector<Blob<Dtype>*>& top) {
+template<typename Dtype, typename MItype, typename MOtype>
+void ImageDataLayer<Dtype, MItype, MOtype>::DataLayerSetUp(
+    const vector<Blob<MItype>*>& bottom,
+    const vector<Blob<MOtype>*>& top) {
   const int_tp new_height = this->layer_param_.image_data_param().new_height();
   const int_tp new_width  = this->layer_param_.image_data_param().new_width();
   const bool is_color  = this->layer_param_.image_data_param().is_color();
@@ -43,7 +45,7 @@ void ImageDataLayer<Dtype>::DataLayerSetUp(const vector<Blob<Dtype>*>& bottom,
   while (std::getline(infile, line)) {
     pos = line.find_last_of(' ');
     label = atoi(line.substr(pos + 1).c_str());
-    lines_.push_back(std::make_pair(line.substr(0, pos), label));
+    lines_.push_back(make_pair(line.substr(0, pos), label));
   }
 
   CHECK(!lines_.empty()) << "File is empty";
@@ -60,7 +62,7 @@ void ImageDataLayer<Dtype>::DataLayerSetUp(const vector<Blob<Dtype>*>& bottom,
       LOG(WARNING) << "Shuffling or skipping recommended for multi-GPU";
     }
   }
-  LOG(INFO) << "A total of " << lines_.size() << " images.";
+  LOG(INFO) << "a total of " << lines_.size() << " images.";
 
   lines_id_ = 0;
   // Check if we would need to randomly skip a few data points
@@ -98,16 +100,16 @@ void ImageDataLayer<Dtype>::DataLayerSetUp(const vector<Blob<Dtype>*>& bottom,
   }
 }
 
-template <typename Dtype>
-void ImageDataLayer<Dtype>::ShuffleImages() {
+template<typename Dtype, typename MItype, typename MOtype>
+void ImageDataLayer<Dtype, MItype, MOtype>::ShuffleImages() {
   caffe::rng_t* prefetch_rng =
       static_cast<caffe::rng_t*>(prefetch_rng_->generator());
   shuffle(lines_.begin(), lines_.end(), prefetch_rng);
 }
 
 // This function is called on prefetch thread
-template <typename Dtype>
-void ImageDataLayer<Dtype>::load_batch(Batch<Dtype>* batch) {
+template<typename Dtype, typename MItype, typename MOtype>
+void ImageDataLayer<Dtype, MItype, MOtype>::load_batch(Batch<Dtype>* batch) {
   CPUTimer batch_timer;
   batch_timer.Start();
   double read_time = 0;
@@ -151,7 +153,7 @@ void ImageDataLayer<Dtype>::load_batch(Batch<Dtype>* batch) {
     // Apply transformations (mirror, crop...) to the image
     int_tp offset = batch->data_.offset(item_id);
     this->transformed_data_.set_cpu_data(prefetch_data + offset);
-    this->data_transformer_->Transform(cv_img, &(this->transformed_data_));
+    this->data_transformer_->Transform(cv_img, &(this->transformed_data_), 0);
     trans_time += timer.MicroSeconds();
 
     prefetch_label[item_id] = lines_[lines_id_].second;
@@ -172,8 +174,14 @@ void ImageDataLayer<Dtype>::load_batch(Batch<Dtype>* batch) {
   DLOG(INFO) << "Transform time: " << trans_time / 1000 << " ms.";
 }
 
-INSTANTIATE_CLASS(ImageDataLayer);
+INSTANTIATE_CLASS_3T_GUARDED(ImageDataLayer, (half_fp), (half_fp), (half_fp));
+INSTANTIATE_CLASS_3T_GUARDED(ImageDataLayer, (float), (float), (float));
+INSTANTIATE_CLASS_3T_GUARDED(ImageDataLayer, (double), (double), (double));
+
 REGISTER_LAYER_CLASS(ImageData);
+REGISTER_LAYER_CLASS_INST(ImageData, (half_fp), (half_fp), (half_fp));
+REGISTER_LAYER_CLASS_INST(ImageData, (float), (float), (float));
+REGISTER_LAYER_CLASS_INST(ImageData, (double), (double), (double));
 
 }  // namespace caffe
 #endif  // USE_OPENCV

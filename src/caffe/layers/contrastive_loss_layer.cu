@@ -4,53 +4,89 @@
 #include "caffe/layers/contrastive_loss_layer.hpp"
 #include "caffe/util/math_functions.hpp"
 
-#ifdef USE_GREENTEA
-#include "caffe/greentea/greentea.hpp"
-#include "caffe/greentea/greentea_math_functions.hpp"
-#endif
-
 namespace caffe {
 
-template<typename Dtype>
-void ContrastiveLossLayer<Dtype>::Forward_gpu(
-    const vector<Blob<Dtype>*>& bottom, const vector<Blob<Dtype>*>& top) {
+template<typename Dtype, typename MItype, typename MOtype>
+void ContrastiveLossLayer<Dtype, MItype, MOtype>::GenerateProgram() {
+  this->device_program_ = this->device_->CreateProgram();
+  stringstream ss;
+
+  ss << this->device_program_->setup();
+  ss << this->device_program_->template define_type<Dtype>("Dtype");
+  ss << this->device_program_->template define_type<MItype>("MItype");
+  ss << this->device_program_->template define_type<MOtype>("MOtype");
+
+  KernelArgs args;
+  args.push_back(this->device_program_->template create_kernel_arg<uint_tp>(
+                    "count", KERNEL_ARG_CONST));
+  args.push_back(this->device_program_->template create_kernel_arg<uint_tp>(
+                    "channels", KERNEL_ARG_CONST));
+  args.push_back(this->device_program_->template create_kernel_arg<Dtype>(
+                    "margin", KERNEL_ARG_CONST));
+  args.push_back(this->device_program_->template create_kernel_arg<bool>(
+                    "legacy_version", KERNEL_ARG_CONST));
+  args.push_back(this->device_program_->template create_kernel_arg<Dtype>(
+                    "alpha", KERNEL_ARG_CONST));
+  args.push_back(this->device_program_->template create_kernel_arg<Dtype>(
+                    "y", KERNEL_ARG_GLOBAL_MEM | KERNEL_ARG_CONST));
+  args.push_back(this->device_program_->template create_kernel_arg<Dtype>(
+                    "diff", KERNEL_ARG_GLOBAL_MEM | KERNEL_ARG_CONST));
+  args.push_back(this->device_program_->template create_kernel_arg<Dtype>(
+                    "dist_sq", KERNEL_ARG_GLOBAL_MEM | KERNEL_ARG_CONST));
+  args.push_back(this->device_program_->template create_kernel_arg<Dtype>(
+                    "bottom_diff", KERNEL_ARG_GLOBAL_MEM));
+  ss << this->device_program_->function("CLLBackward", args);
+  ss << this->device_program_->kernel_loop("uint_tp", "i", "count");
+  // the num index, to access Y and dist_sq
+  ss << "uint_tp n = i / channels;" << std::endl;
+  ss << "if ((int_tp)(y[n])) {" << std::endl;  // similar pairs
+  ss << "bottom_diff[i] = alpha * diff[i];" << std::endl;
+  ss << "} else {" << std::endl;  // dissimilar pairs
+  ss << "Dtype mdist = (Dtype)0;" << std::endl;
+  ss << "Dtype beta = (Dtype)0;" << std::endl;
+  ss << "if (legacy_version) {" << std::endl;
+  ss << "mdist = (margin - dist_sq[n]);" << std::endl;
+  ss << "beta = -alpha;" << std::endl;
+  ss << "} else {" << std::endl;
+  ss << "Dtype dist = sqrt(dist_sq[n]);" << std::endl;
+  ss << "mdist = (margin - dist);" << std::endl;
+  ss << "beta = -alpha * mdist / (dist + (Dtype)(1e-4)) * diff[i];" << std::endl;
+  ss << "}" << std::endl;
+  ss << "if (mdist > (Dtype)0) {" << std::endl;
+  ss << "bottom_diff[i] = beta;" << std::endl;
+  ss << "} else {" << std::endl;
+  ss << "bottom_diff[i] = (MItype)0;" << std::endl;
+  ss << "}" << std::endl;
+  ss << "}" << std::endl;
+  ss << "}" << std::endl;
+  ss << "}" << std::endl;
+  this->device_program_->set_source(ss.str());
+  this->device_program_->Compile(true, true);
+}
+
+
+template<typename Dtype, typename MItype, typename MOtype>
+void ContrastiveLossLayer<Dtype, MItype, MOtype>::Forward_gpu(
+    const vector<Blob<MItype>*>& bottom,
+    const vector<Blob<MOtype>*>& top) {
   const bool legacy_version = this->layer_param_.contrastive_loss_param()
       .legacy_version();
 
   const int_tp count = bottom[0]->count();
 
-  if (this->device_->backend() == BACKEND_CUDA) {
-#ifdef USE_CUDA
-    caffe_gpu_sub(count, bottom[0]->gpu_data(),  // a
-                  bottom[1]->gpu_data(),  // b
-                  diff_.mutable_gpu_data());  // a_i-b_i
-    caffe_gpu_powx(count, diff_.mutable_gpu_data(),  // a_i-b_i
-                   Dtype(2), diff_sq_.mutable_gpu_data());  // (a_i-b_i)^2
-    caffe_gpu_gemv(CblasNoTrans, bottom[0]->shape(0), bottom[0]->shape(1),
-                   Dtype(1.0),
-                   diff_sq_.gpu_data(),  // (a_i-b_i)^2
-                   summer_vec_.gpu_data(), Dtype(0.0),
-                   dist_sq_.mutable_gpu_data());  // \Sum (a_i-b_i)^2
-#endif  // USE_CUDA
-  } else {
-#ifdef USE_GREENTEA
-    greentea_gpu_sub<Dtype>(this->device_->id(), count,
-                            (cl_mem) (bottom[0]->gpu_data()), 0,
-                            (cl_mem) (bottom[1]->gpu_data()), 0,
-                            (cl_mem) (diff_.mutable_gpu_data()), 0);
-    greentea_gpu_powx<Dtype>(this->device_->id(), count,
-                             (cl_mem) (diff_.mutable_gpu_data()),
-                             0,  // a_i-b_i
-                             Dtype(2), (cl_mem) (diff_sq_.mutable_gpu_data()),
-                             0);  // (a_i-b_i)^2
-    greentea_gpu_gemv<Dtype>(this->device_->id(), CblasNoTrans,
-                             bottom[0]->shape(0), bottom[0]->shape(1),
-                             Dtype(1.0), (cl_mem) (diff_sq_.gpu_data()),
-                             0,  // (a_i-b_i)^2
-                             (cl_mem) (summer_vec_.gpu_data()), 0, Dtype(0.0),
-                             (cl_mem) (dist_sq_.mutable_gpu_data()), 0);
-#endif  // USE_GREENTEA
-  }
+  this->device_->template sub<Dtype>(count, bottom[0]->gpu_data(),  // a
+                                     bottom[1]->gpu_data(),  // b
+                                     diff_.mutable_gpu_data());  // a_i-b_i
+  // a_i-b_i
+  this->device_->template powx<Dtype>(count, diff_.mutable_gpu_data(),
+                         Dtype(2), diff_sq_.mutable_gpu_data());  // (a_i-b_i)^2
+  this->device_->template gemv<Dtype>(CblasNoTrans, bottom[0]->shape(0),
+                               bottom[0]->shape(1),
+                               Dtype(1.0),
+                               diff_sq_.gpu_data(),  // (a_i-b_i)^2
+                               summer_vec_.gpu_data(), Dtype(0.0),
+                               // \Sum (a_i-b_i)^2
+                               dist_sq_.mutable_gpu_data());
 
   Dtype margin = this->layer_param_.contrastive_loss_param().margin();
   Dtype loss(0.0);
@@ -59,9 +95,9 @@ void ContrastiveLossLayer<Dtype>::Forward_gpu(
       loss += dist_sq_.cpu_data()[i];
     } else {  // dissimilar pairs
       if (legacy_version) {
-        loss += std::max(margin - dist_sq_.cpu_data()[i], Dtype(0.0));
+        loss += fmax(margin - dist_sq_.cpu_data()[i], Dtype(0.0));
       } else {
-        Dtype dist = std::max(margin - (Dtype) sqrt(dist_sq_.cpu_data()[i]),
+        Dtype dist = fmax(margin - (Dtype) sqrt(dist_sq_.cpu_data()[i]),
                               Dtype(0.0));
         loss += dist * dist;
       }
@@ -71,44 +107,16 @@ void ContrastiveLossLayer<Dtype>::Forward_gpu(
   top[0]->mutable_cpu_data()[0] = loss;
 }
 
-#ifdef USE_CUDA
-template<typename Dtype>
-__global__ void CLLBackward(const int_tp count, const int_tp channels,
-                            const Dtype margin, const bool legacy_version,
-                            const Dtype alpha, const Dtype* y,
-                            const Dtype* diff, const Dtype* dist_sq,
-                            Dtype *bottom_diff) {
-  CUDA_KERNEL_LOOP(i, count) {
-    int_tp n = i / channels;  // the num index, to access y and dist_sq
-    if (static_cast<int_tp>(y[n])) {  // similar pairs
-      bottom_diff[i] = alpha * diff[i];
-    } else {  // dissimilar pairs
-      Dtype mdist(0.0);
-      Dtype beta(0.0);
-      if (legacy_version) {
-        mdist = (margin - dist_sq[n]);
-        beta = -alpha;
-      } else {
-        Dtype dist = sqrt(dist_sq[n]);
-        mdist = (margin - dist);
-        beta = -alpha * mdist / (dist + Dtype(1e-4)) * diff[i];
-      }
-      if (mdist > 0.0) {
-        bottom_diff[i] = beta;
-      } else {
-        bottom_diff[i] = 0;
-      }
-    }
-  }
-}
-#endif  // USE_CUDA
 
-template<typename Dtype>
-void ContrastiveLossLayer<Dtype>::Backward_gpu(
-    const vector<Blob<Dtype>*>& top, const vector<bool>& propagate_down,
-    const vector<Blob<Dtype>*>& bottom) {
+template<typename Dtype, typename MItype, typename MOtype>
+void ContrastiveLossLayer<Dtype, MItype, MOtype>::Backward_gpu(
+    const vector<Blob<MOtype>*>& top, const vector<bool>& propagate_down,
+    const vector<Blob<MItype>*>& bottom) {
   const bool legacy_version = this->layer_param_.contrastive_loss_param()
       .legacy_version();
+
+  shared_ptr<DeviceKernel> kernel =
+                                this->device_program_->GetKernel("CLLBackward");
 
   for (int_tp i = 0; i < 2; ++i) {
     if (propagate_down[i]) {
@@ -119,41 +127,51 @@ void ContrastiveLossLayer<Dtype>::Backward_gpu(
       const Dtype alpha = sign * top[0]->cpu_diff()[0]
           / static_cast<Dtype>(bottom[0]->shape(0));
 
-      if (this->device_->backend() == BACKEND_CUDA) {
-#ifdef USE_CUDA
-        // NOLINT_NEXT_LINE(whitespace/operators)
-        CLLBackward<Dtype> CUDA_KERNEL(CAFFE_GET_BLOCKS(count),
-                                       CAFFE_CUDA_NUM_THREADS)(
-            count, channels, margin, legacy_version, alpha,
-            bottom[2]->gpu_data(),  // pair similarity 0 or 1
-            diff_.gpu_data(),  // the cached eltwise difference between a and b
-            dist_sq_.gpu_data(),  // the cached square distance between a and b
-            bottom[i]->mutable_gpu_diff());
-        CUDA_POST_KERNEL_CHECK;
-#endif  // USE_CUDA
-      } else {
-#ifdef USE_GREENTEA
-        viennacl::ocl::context &ctx = viennacl::ocl::get_context(
-            this->device_->id());
-        viennacl::ocl::program &program = this->device_->program();
-        viennacl::ocl::kernel &oclk_cll = program.get_kernel(
-            legacy_version ? CL_KERNEL_SELECT("cll_backward_legacy") :
-                CL_KERNEL_SELECT("cll_backward"));
-        viennacl::ocl::enqueue(
-            oclk_cll(
-                count, channels, margin, alpha,
-                WrapHandle((cl_mem) (bottom[2]->gpu_data()), &ctx),
-                WrapHandle((cl_mem) (diff_.gpu_data()), &ctx),
-                WrapHandle((cl_mem) (dist_sq_.gpu_data()), &ctx),
-                WrapHandle((cl_mem) (bottom[i]->mutable_gpu_diff()), &ctx)),
-            ctx.get_queue());
+      vptr<const Dtype> bottom_data = bottom[2]->gpu_data();
+      vptr<const Dtype> diff_data = diff_.gpu_data();
+      vptr<const Dtype> dist_sq_data = diff_sq_.gpu_data();
+      vptr<Dtype> bottom_diff = bottom[i]->mutable_gpu_diff();
 
-#endif  // USE_GREENTEA
-      }
+      kernel->add_arg(&count);
+      kernel->add_arg(&channels);
+      kernel->add_arg(&margin);
+      kernel->add_arg(&legacy_version);
+      kernel->add_arg(&alpha);
+      kernel->add_arg(&bottom_data);  // pair similarity 0 or 1
+      // the cached eltwise difference between a and b
+      kernel->add_arg(&diff_data);
+      // the cached square distance between a and b
+      kernel->add_arg(&dist_sq_data);
+      kernel->add_arg(&bottom_diff);
+
+      vector<size_t> work_size(1, count);
+      vector<size_t> group;
+      vector<size_t> local;
+      this->device_->get_threads(&work_size, &group, &local, kernel.get(),
+                                 true);
+      kernel->Execute(group, local);
     }
   }
 }
 
-INSTANTIATE_LAYER_GPU_FUNCS(ContrastiveLossLayer);
+INSTANTIATE_CLASST_FUNC_3T_GUARDED(ContrastiveLossLayer, GenerateProgram,
+                                  (half_fp), (half_fp), (half_fp));
+INSTANTIATE_CLASST_FUNC_3T_GUARDED(ContrastiveLossLayer, GenerateProgram,
+                                  (float), (float), (float));
+INSTANTIATE_CLASST_FUNC_3T_GUARDED(ContrastiveLossLayer, GenerateProgram,
+                                  (double), (double), (double));
 
+INSTANTIATE_CLASST_FUNC_3T_GUARDED(ContrastiveLossLayer, Forward_gpu,
+                                  (half_fp), (half_fp), (half_fp));
+INSTANTIATE_CLASST_FUNC_3T_GUARDED(ContrastiveLossLayer, Forward_gpu,
+                                  (float), (float), (float));
+INSTANTIATE_CLASST_FUNC_3T_GUARDED(ContrastiveLossLayer, Forward_gpu,
+                                  (double), (double), (double));
+
+INSTANTIATE_CLASST_FUNC_3T_GUARDED(ContrastiveLossLayer, Backward_gpu,
+                                  (half_fp), (half_fp), (half_fp));
+INSTANTIATE_CLASST_FUNC_3T_GUARDED(ContrastiveLossLayer, Backward_gpu,
+                                  (float), (float), (float));
+INSTANTIATE_CLASST_FUNC_3T_GUARDED(ContrastiveLossLayer, Backward_gpu,
+                                  (double), (double), (double));
 }  // namespace caffe

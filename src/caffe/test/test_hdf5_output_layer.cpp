@@ -21,8 +21,7 @@ class HDF5OutputLayerTest : public MultiDeviceTest<TypeParam> {
 
  protected:
   HDF5OutputLayerTest()
-      : input_file_name_(
-        CMAKE_SOURCE_DIR "caffe/test/test_data/sample_data.h5"),
+      : input_file_name_(ABS_TEST_DATA_DIR "/sample_data.h5"),
         blob_data_(new Blob<Dtype>()),
         blob_label_(new Blob<Dtype>()),
         num_(5),
@@ -69,7 +68,7 @@ void HDF5OutputLayerTest<TypeParam>::CheckBlobEqual(const Blob<Dtype>& b1,
   }
 }
 
-TYPED_TEST_CASE(HDF5OutputLayerTest, TestDtypesAndDevices);
+TYPED_TEST_CASE(HDF5OutputLayerTest, TestDtypesFloatAndDevices);
 
 TYPED_TEST(HDF5OutputLayerTest, TestForward) {
   typedef typename TypeParam::Dtype Dtype;
@@ -95,7 +94,7 @@ TYPED_TEST(HDF5OutputLayerTest, TestForward) {
   // This code block ensures that the layer is deconstructed and
   //   the output hdf5 file is closed.
   {
-    HDF5OutputLayer<Dtype> layer(param);
+    HDF5OutputLayer<Dtype, Dtype, Dtype> layer(param);
     layer.SetUp(this->blob_bottom_vec_, this->blob_top_vec_);
     EXPECT_EQ(layer.file_name(), this->output_file_name_);
     layer.Forward(this->blob_bottom_vec_, this->blob_top_vec_);
